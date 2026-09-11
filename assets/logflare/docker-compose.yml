@@ -1,0 +1,59 @@
+# Standalone Logflare deployment.
+#
+# Used only when the installed Supabase release does not ship an "analytics"
+# service of its own. It runs in single-tenant Supabase mode against the
+# existing Supabase PostgreSQL instance (schema _analytics), so there is no
+# second database to operate and no BigQuery dependency.
+#
+# Managed by sentinel-ops. See docs/LOGFLARE.md for the Supabase-side settings.
+
+services:
+  logflare:
+    image: supabase/logflare:1.14.2
+    container_name: sentinel-ops-logflare
+    restart: unless-stopped
+    ports:
+      # Bound to loopback: vector and Studio reach it over the Docker network,
+      # and the installer health-checks it from the host.
+      - "127.0.0.1:${LOGFLARE_PORT}:4000"
+    environment:
+      # Single-tenant mode skips account creation and serves Studio's log views
+      # directly.
+      LOGFLARE_SINGLE_TENANT: ${LOGFLARE_SINGLE_TENANT}
+      LOGFLARE_SUPABASE_MODE: ${LOGFLARE_SUPABASE_MODE}
+
+      # Ingest and query tokens. These must match the values in supabase/.env,
+      # which is what vector and Studio authenticate with.
+      LOGFLARE_PUBLIC_ACCESS_TOKEN: ${LOGFLARE_PUBLIC_ACCESS_TOKEN}
+      LOGFLARE_PRIVATE_ACCESS_TOKEN: ${LOGFLARE_PRIVATE_ACCESS_TOKEN}
+
+      # Postgres backend, pointed at the Supabase database.
+      POSTGRES_BACKEND_URL: postgresql://${LOGFLARE_DB_USERNAME}:${LOGFLARE_DB_PASSWORD}@${LOGFLARE_DB_HOSTNAME}:${LOGFLARE_DB_PORT}/${LOGFLARE_DB_DATABASE}
+      POSTGRES_BACKEND_SCHEMA: ${LOGFLARE_DB_SCHEMA}
+      DB_HOSTNAME: ${LOGFLARE_DB_HOSTNAME}
+      DB_PORT: ${LOGFLARE_DB_PORT}
+      DB_DATABASE: ${LOGFLARE_DB_DATABASE}
+      DB_USERNAME: ${LOGFLARE_DB_USERNAME}
+      DB_PASSWORD: ${LOGFLARE_DB_PASSWORD}
+      DB_SCHEMA: ${LOGFLARE_DB_SCHEMA}
+
+      LOGFLARE_FEATURE_FLAG_OVERRIDE: "multibackend=true"
+      LOGFLARE_NODE_HOST: 127.0.0.1
+      LOGFLARE_LOG_LEVEL: warn
+      PHX_HTTP_PORT: "4000"
+      SECRET_KEY_BASE: ${LOGFLARE_SECRET_KEY_BASE}
+    healthcheck:
+      test: ["CMD", "sh", "-c", "wget -qO- http://127.0.0.1:4000/health >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    networks:
+      - supabase
+
+networks:
+  supabase:
+    # The network the Supabase stack created; joining it lets Logflare reach
+    # the database by service name.
+    name: ${LOGFLARE_SUPABASE_NETWORK}
+    external: true

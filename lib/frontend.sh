@@ -1,0 +1,263 @@
+#!/usr/bin/env bash
+# lib/frontend.sh - application environment, Docker image and container.
+# shellcheck shell=bash
+
+# docker | host
+#   docker - multi-stage build; npm ci and npm run build run inside the image,
+#            so the server needs no Node.js toolchain at all. Default.
+#   host   - npm ci and npm run build run on the host, and the image only
+#            packages the resulting dist/.
+FRONTEND_BUILD_MODE="${FRONTEND_BUILD_MODE:-docker}"
+
+# ---------------------------------------------------------------------------
+# Application environment
+# ---------------------------------------------------------------------------
+
+# Generate app/.env from the live Supabase configuration.
+#
+# Keys the installer owns are always refreshed (they are derived values, and a
+# stale Supabase URL is a broken deployment). Any other key an operator added
+# is preserved.
+app_env_generate() {
+    local env_file="${APP_DIR}/.env"
+    local pub_key project_id
+
+    if ! pub_key="$(supabase_publishable_key)"; then
+        log_error "Could not read the Supabase publishable (anon) key from ${SUPABASE_DIR}/.env"
+        return 1
+    fi
+    project_id="local"
+
+    [[ -f "$env_file" ]] || : >"$env_file"
+
+    # NOTE: the service-role key is deliberately absent. Anything in a Vite
+    # build is shipped to the browser, so a service-role key here would hand
+    # every visitor full database access.
+    env_set "$env_file" PORT                          "$APP_PORT"
+    env_set "$env_file" NODE_ENV                      "production"
+    env_set "$env_file" SUPABASE_PROJECT_ID           "\"${project_id}\""
+    env_set "$env_file" SUPABASE_PUBLISHABLE_KEY      "\"${pub_key}\""
+    env_set "$env_file" SUPABASE_URL                  "\"${SUPABASE_PUBLIC_URL}\""
+    env_set "$env_file" VITE_SUPABASE_PROJECT_ID      "\"${project_id}\""
+    env_set "$env_file" VITE_SUPABASE_PUBLISHABLE_KEY "\"${pub_key}\""
+    env_set "$env_file" VITE_SUPABASE_URL             "\"${SUPABASE_PUBLIC_URL}\""
+
+    chmod 640 "$env_file" 2>/dev/null || true
+    log_ok "Application environment written to ${env_file}"
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# Build assets
+# ---------------------------------------------------------------------------
+
+# The Dockerfile belongs in the application repository. Until it is committed
+# there, the installer supplies one so deployment is not blocked.
+frontend_provision_build_files() {
+    local src="${SO_ASSETS_DIR}/app"
+
+    if [[ -f "${APP_DIR}/Dockerfile" ]]; then
+        log_ok "Using the Dockerfile from the application repository"
+    else
+        cp "${src}/Dockerfile" "${APP_DIR}/Dockerfile" || return 1
+        log_info "Repository has no Dockerfile; using the installer's production template."
+    fi
+
+    [[ -f "${APP_DIR}/.dockerignore" ]] || cp "${src}/dockerignore" "${APP_DIR}/.dockerignore"
+    # nginx config is referenced by the template Dockerfile.
+    [[ -f "${APP_DIR}/nginx.conf" ]] || cp "${src}/nginx.conf" "${APP_DIR}/nginx.conf"
+    return 0
+}
+
+frontend_image_tag()  { printf '%s:%s' "$APP_IMAGE_NAME" "$(repo_short_commit)"; }
+frontend_image_latest() { printf '%s:latest' "$APP_IMAGE_NAME"; }
+
+# Build on the host, for FRONTEND_BUILD_MODE=host.
+frontend_host_build() {
+    if ! have_cmd npm; then
+        log_error "FRONTEND_BUILD_MODE=host requires Node.js and npm on this server."
+        log_error "Install Node.js, or switch to the default docker build mode."
+        return 1
+    fi
+    log_info "Installing npm dependencies..."
+    if [[ -f "${APP_DIR}/package-lock.json" ]]; then
+        run_logged "npm ci" bash -c "cd '$APP_DIR' && npm ci" || return 1
+    else
+        log_warn "No package-lock.json; falling back to 'npm install'."
+        run_logged "npm install" bash -c "cd '$APP_DIR' && npm install" || return 1
+    fi
+    log_info "Building the frontend..."
+    run_logged "npm run build" bash -c "cd '$APP_DIR' && npm run build" || return 1
+    [[ -d "${APP_DIR}/dist" ]] || { log_error "Build finished but ${APP_DIR}/dist does not exist."; return 1; }
+    log_ok "Frontend built"
+}
+
+# Build the production image, tagged with the Git SHA so a previous image is
+# always available to roll back to.
+frontend_build_image() {
+    local tag latest pub_key
+    tag="$(frontend_image_tag)"
+    latest="$(frontend_image_latest)"
+
+    frontend_provision_build_files || return 1
+
+    if [[ "$FRONTEND_BUILD_MODE" == "host" ]]; then
+        frontend_host_build || return 1
+    fi
+
+    pub_key="$(supabase_publishable_key)" || return 1
+
+    log_info "Building Docker image ${tag}..."
+    # Vite inlines VITE_* variables at build time, so they must be present in
+    # the build stage - passing them at container runtime would be too late.
+    if ! run_logged "docker build" docker build \
+            --build-arg "BUILD_MODE=${FRONTEND_BUILD_MODE}" \
+            --build-arg "VITE_SUPABASE_URL=${SUPABASE_PUBLIC_URL}" \
+            --build-arg "VITE_SUPABASE_PUBLISHABLE_KEY=${pub_key}" \
+            --build-arg "VITE_SUPABASE_PROJECT_ID=local" \
+            --build-arg "APP_PORT=${APP_PORT}" \
+            -t "$tag" -t "$latest" \
+            -f "${APP_DIR}/Dockerfile" \
+            "$APP_DIR"; then
+        return 1
+    fi
+    log_ok "Image built: ${tag}"
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# Container lifecycle
+# ---------------------------------------------------------------------------
+
+container_exists()  { docker container inspect "$1" >/dev/null 2>&1; }
+container_running() { [[ "$(docker inspect -f '{{.State.Running}}' "$1" 2>/dev/null)" == "true" ]]; }
+
+# Bind to loopback when a reverse proxy fronts the app; otherwise the container
+# has to be reachable from outside.
+frontend_bind_address() {
+    if [[ "$ENABLE_CADDY" == "true" ]]; then printf '127.0.0.1'; else printf '0.0.0.0'; fi
+}
+
+# Start a container from an image. frontend_run_container <name> <image> <host-port>
+frontend_run_container() {
+    local name="$1" image="$2" host_port="$3" network bind
+    network="$(supabase_network_name)"
+    bind="$(frontend_bind_address)"
+
+    docker rm -f "$name" >/dev/null 2>&1 || true
+
+    # Runtime environment is passed explicitly rather than with --env-file:
+    # Docker does not strip quotes from an env file, so the quoted values in
+    # app/.env (which is written in the format the application's own tooling
+    # expects) would arrive with literal " characters around them.
+    #
+    # The client-side Supabase settings are not needed here in any case - Vite
+    # inlined them into the bundle at build time.
+    local args=(
+        run -d
+        --name "$name"
+        --restart unless-stopped
+        -e "NODE_ENV=production"
+        -e "APP_PORT=${APP_PORT}"
+        -p "${bind}:${host_port}:${APP_PORT}"
+    )
+    # Attaching to the Supabase network lets Caddy route by container name.
+    if docker network inspect "$network" >/dev/null 2>&1; then
+        args+=(--network "$network")
+    else
+        log_warn "Supabase network '${network}' not found; starting on the default bridge."
+    fi
+    args+=("$image")
+
+    run_logged "start ${name}" docker "${args[@]}"
+}
+
+frontend_check_http() {
+    local port="${1:-$APP_PORT}" code
+    code="$(_http_code "http://127.0.0.1:${port}/")"
+    [[ "$code" =~ ^(200|301|302)$ ]]
+}
+
+frontend_health_check() {
+    local port="${1:-$APP_PORT}"
+    log_info "Checking the frontend on port ${port}..."
+    if wait_for 90 3 frontend_check_http "$port"; then
+        log_ok "Frontend responding"
+        return 0
+    fi
+    log_error "Frontend did not answer on port ${port}"
+    docker logs --tail 40 "$APP_CONTAINER_NAME" 2>&1 | tail -n 40 >&2 || true
+    return 1
+}
+
+# Find a free TCP port for the staging container.
+_free_port() {
+    local port
+    for port in $(seq 39000 39050); do
+        if ! (exec 3<>"/dev/tcp/127.0.0.1/${port}") 2>/dev/null; then
+            printf '%s' "$port"; return 0
+        fi
+        exec 3>&- 2>/dev/null || true
+    done
+    printf '39099'
+}
+
+# Deploy the new image without destroying the running one first.
+#
+#   verify the new image on a staging container
+#        -> only then replace the live container
+#        -> if the replacement is unhealthy, restore the previous image
+frontend_deploy() {
+    local image staging_name staging_port previous_image
+    image="$(frontend_image_tag)"
+    staging_name="${APP_CONTAINER_NAME}-staging"
+    staging_port="$(_free_port)"
+    previous_image="$(state_get APP_IMAGE '')"
+
+    # 1. Prove the new image actually serves traffic.
+    log_info "Verifying the new image on a staging container..."
+    if ! frontend_run_container "$staging_name" "$image" "$staging_port"; then
+        docker rm -f "$staging_name" >/dev/null 2>&1 || true
+        return 1
+    fi
+    if ! wait_for 90 3 frontend_check_http "$staging_port"; then
+        log_error "The new image failed its health check; the running deployment was left untouched."
+        docker logs --tail 40 "$staging_name" 2>&1 | tail -n 40 >&2 || true
+        docker rm -f "$staging_name" >/dev/null 2>&1 || true
+        return 1
+    fi
+    log_ok "New image verified"
+    docker rm -f "$staging_name" >/dev/null 2>&1 || true
+
+    # 2. Swap the live container over.
+    if container_exists "$APP_CONTAINER_NAME"; then
+        log_info "Replacing the running container..."
+        docker rm -f "$APP_CONTAINER_NAME" >/dev/null 2>&1 || true
+    fi
+
+    if frontend_run_container "$APP_CONTAINER_NAME" "$image" "$APP_PORT" \
+        && wait_for 90 3 frontend_check_http "$APP_PORT"; then
+        log_ok "Sentinel Ops frontend deployed (${image})"
+        state_set APP_IMAGE "$image"
+        [[ -n "$previous_image" && "$previous_image" != "$image" ]] && \
+            state_set PREVIOUS_APP_IMAGE "$previous_image"
+        return 0
+    fi
+
+    # 3. Roll back to the previous image if we have one.
+    log_error "The replacement container is unhealthy."
+    if [[ -n "$previous_image" ]] && docker image inspect "$previous_image" >/dev/null 2>&1; then
+        log_warn "Rolling back to ${previous_image}..."
+        if frontend_run_container "$APP_CONTAINER_NAME" "$previous_image" "$APP_PORT" \
+            && wait_for 60 3 frontend_check_http "$APP_PORT"; then
+            log_ok "Rolled back to ${previous_image}"
+        else
+            log_error "Rollback also failed. The frontend is down."
+        fi
+    else
+        log_error "No previous image recorded; cannot roll back automatically."
+    fi
+    return 1
+}
+
+frontend_deployed_image() { state_get APP_IMAGE ''; }

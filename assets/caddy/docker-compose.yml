@@ -1,0 +1,38 @@
+# Sentinel Ops edge proxy.
+#
+# Terminates TLS and routes the public hostnames to services that already
+# exist. It joins the Supabase network so it can reach both Kong and the
+# frontend container by name, which keeps those ports off the public interface.
+#
+# Managed by sentinel-ops; the Caddyfile is regenerated on every update.
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    container_name: sentinel-ops-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"   # HTTP/3
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data      # certificates and ACME account keys
+      - caddy_config:/config
+    networks:
+      - supabase
+    healthcheck:
+      test: ["CMD", "caddy", "version"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  caddy_data:
+  caddy_config:
+
+networks:
+  supabase:
+    # Created by the Supabase stack; the installer resolves the real name.
+    name: ${SUPABASE_NETWORK}
+    external: true
