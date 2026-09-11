@@ -103,14 +103,6 @@ _status_app() {
     else
         status_line "HTTP health" "bad" "Not responding on port ${APP_PORT}"
     fi
-
-    if [[ "$ENABLE_CADDY" == "true" ]]; then
-        if proxy_running; then
-            status_line "Reverse proxy" "ok" "Running"
-        else
-            status_line "Reverse proxy" "bad" "Not running"
-        fi
-    fi
     return 0
 }
 
@@ -118,7 +110,9 @@ _status_urls() {
     section "URLs"
     status_line "Application" "" "$SITE_URL"
     status_line "Supabase" "" "$SUPABASE_PUBLIC_URL"
-    status_line "Studio" "" "${SUPABASE_PUBLIC_URL}"
+    # These are what your reverse proxy should point at.
+    status_line "Frontend upstream" "" "${APP_BIND:-127.0.0.1}:${APP_PORT}"
+    status_line "Supabase upstream" "" "127.0.0.1:$(supabase_kong_port)"
     return 0
 }
 

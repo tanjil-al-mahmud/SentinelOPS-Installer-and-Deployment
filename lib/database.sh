@@ -216,7 +216,7 @@ deploy_functions() {
     svc="$(_functions_service)"
     log_info "Restarting the edge runtime (${svc})..."
     if ! run_logged "restart ${svc}" bash -c \
-        "cd '$SUPABASE_DIR' && ${DOCKER_COMPOSE_CMD[*]} --env-file '${SUPABASE_DIR}/.env' -f docker-compose.yml up -d --force-recreate ${svc}"; then
+        "$(_supabase_compose_cmd) up -d --force-recreate ${svc}"; then
         log_error "Could not restart the edge runtime."
         return 1
     fi

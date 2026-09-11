@@ -35,7 +35,7 @@ SO_ASSETS_DIR="${SO_ROOT}/assets"
 # alongside the installer.
 SO_SOURCE_DIR="$SO_ROOT"
 
-for _lib in common os prereqs config supabase logflare repo frontend database proxy selfinstall menu; do
+for _lib in common os prereqs config supabase logflare repo frontend database selfinstall menu; do
     # shellcheck source=/dev/null
     source "${SO_LIB_DIR}/${_lib}.sh"
 done
@@ -67,7 +67,7 @@ Commands:
   backup [create|list]    Create or list database backups
   restore [backup]        Restore a database backup (latest if omitted)
   rollback                Roll the application back to the previous image
-  logs [target] [lines]   app | supabase | logflare | proxy | installer
+  logs [target] [lines]   app | supabase | logflare | installer
   version                 Print the installer version
 
 Options:

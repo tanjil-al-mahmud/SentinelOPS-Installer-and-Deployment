@@ -20,8 +20,19 @@ SUPABASE_PRESERVE=(
 # ---------------------------------------------------------------------------
 
 # Run docker compose against the Supabase deployment.
+#
+# No -f is passed on purpose. Supabase's run.sh enables optional overlays (such
+# as the logs/analytics stack) by setting COMPOSE_FILE in supabase/.env, and
+# Compose reads that itself. Hardcoding -f docker-compose.yml would silently
+# drop every overlay service from ps, logs, up and down.
 supabase_compose() {
-    ( cd "$SUPABASE_DIR" && compose --env-file "${SUPABASE_DIR}/.env" -f docker-compose.yml "$@" )
+    ( cd "$SUPABASE_DIR" && compose --env-file "${SUPABASE_DIR}/.env" "$@" )
+}
+
+# The same invocation as a single string, for run_logged's bash -c form.
+_supabase_compose_cmd() {
+    printf "cd '%s' && %s --env-file '%s/.env'" \
+        "$SUPABASE_DIR" "${DOCKER_COMPOSE_CMD[*]}" "$SUPABASE_DIR"
 }
 
 # Resolve the container id backing a compose service ("" when not running).
@@ -55,7 +66,7 @@ supabase_installed() {
 }
 
 # The Docker network the Supabase stack runs on. Other components (the
-# frontend, standalone Logflare, Caddy) attach to it so they can reach Supabase
+# frontend, standalone Logflare) attach to it so they can reach Supabase
 # by service name instead of going back out through the host.
 supabase_network_name() {
     local cid net
@@ -260,9 +271,6 @@ supabase_prompt_config() {
     prompt_default SITE_URL "Site URL (the Sentinel Ops application)" "$SITE_URL"
     SITE_URL="$(strip_trailing_slash "$SITE_URL")"
 
-    prompt_default SUPABASE_PROXY_DOMAIN "Supabase proxy domain" "$(url_host "$SUPABASE_PUBLIC_URL")"
-    APP_DOMAIN="$(url_host "$SITE_URL")"
-    prompt_default APP_DOMAIN "Application proxy domain" "$APP_DOMAIN"
 }
 
 # Apply the operator's settings to supabase/.env. Only these keys are managed;
@@ -331,7 +339,7 @@ supabase_pull() {
 supabase_start() {
     log_info "Starting Supabase..."
     if ! run_logged "supabase up" bash -c \
-        "cd '$SUPABASE_DIR' && ${DOCKER_COMPOSE_CMD[*]} --env-file '${SUPABASE_DIR}/.env' -f docker-compose.yml up -d"; then
+        "$(_supabase_compose_cmd) up -d --remove-orphans"; then
         return 1
     fi
     log_ok "Supabase started"

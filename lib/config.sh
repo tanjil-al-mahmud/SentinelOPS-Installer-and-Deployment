@@ -26,14 +26,19 @@ DEPLOY_KEY=""
 SUPABASE_PUBLIC_URL="https://supabase.example.com"
 API_EXTERNAL_URL="https://supabase.example.com"
 SITE_URL="https://app.example.com"
-SUPABASE_PROXY_DOMAIN="supabase.example.com"
-APP_DOMAIN="app.example.com"
 APP_PORT="3000"
+# Where the frontend's published port is bound. The reverse proxy is the
+# operator's responsibility, so the default is loopback: a proxy on this host
+# reaches it, the public internet does not. Set to 0.0.0.0 only if the proxy
+# runs on a different machine.
+APP_BIND="127.0.0.1"
 APP_IMAGE_NAME="sentinel-ops"
 APP_CONTAINER_NAME="sentinel-ops-frontend"
-ENABLE_CADDY="true"
 ENABLE_LOGFLARE="true"
-ACME_EMAIL=""
+# postgres | bigquery - see docs/LOGFLARE.md
+LOGFLARE_BACKEND="postgres"
+GOOGLE_PROJECT_ID=""
+GOOGLE_PROJECT_NUMBER=""
 
 # Establish every path from the installation root.
 config_set_paths() {
@@ -69,9 +74,9 @@ config_load() {
     [[ -f "$CONFIG_FILE" ]] || return 1
     local key val
     for key in APP_REPOSITORY APP_BRANCH DEPLOY_KEY SUPABASE_PUBLIC_URL \
-               API_EXTERNAL_URL SITE_URL SUPABASE_PROXY_DOMAIN APP_DOMAIN \
-               APP_PORT APP_IMAGE_NAME APP_CONTAINER_NAME ENABLE_CADDY \
-               ENABLE_LOGFLARE ACME_EMAIL; do
+               API_EXTERNAL_URL SITE_URL APP_PORT APP_BIND APP_IMAGE_NAME \
+               APP_CONTAINER_NAME ENABLE_LOGFLARE LOGFLARE_BACKEND \
+               GOOGLE_PROJECT_ID GOOGLE_PROJECT_NUMBER; do
         val="$(env_get "$CONFIG_FILE" "$key" || true)"
         [[ -n "$val" ]] && printf -v "$key" '%s' "$val"
     done
@@ -98,17 +103,18 @@ config_save() {
         printf '# Public endpoints\n'
         printf 'SUPABASE_PUBLIC_URL=%s\n'   "$SUPABASE_PUBLIC_URL"
         printf 'API_EXTERNAL_URL=%s\n'      "$API_EXTERNAL_URL"
-        printf 'SITE_URL=%s\n'              "$SITE_URL"
-        printf 'SUPABASE_PROXY_DOMAIN=%s\n' "$SUPABASE_PROXY_DOMAIN"
-        printf 'APP_DOMAIN=%s\n\n'          "$APP_DOMAIN"
-        printf '# Frontend runtime\n'
+        printf 'SITE_URL=%s\n\n'            "$SITE_URL"
+        printf '# Frontend runtime. Point your own reverse proxy at\n'
+        printf '# APP_BIND:APP_PORT, and at Supabase Kong for the API.\n'
         printf 'APP_PORT=%s\n'              "$APP_PORT"
+        printf 'APP_BIND=%s\n'              "$APP_BIND"
         printf 'APP_IMAGE_NAME=%s\n'        "$APP_IMAGE_NAME"
         printf 'APP_CONTAINER_NAME=%s\n\n'  "$APP_CONTAINER_NAME"
-        printf '# Optional components\n'
-        printf 'ENABLE_CADDY=%s\n'          "$ENABLE_CADDY"
+        printf '# Analytics (Logflare) - see docs/LOGFLARE.md\n'
         printf 'ENABLE_LOGFLARE=%s\n'       "$ENABLE_LOGFLARE"
-        printf 'ACME_EMAIL=%s\n'            "$ACME_EMAIL"
+        printf 'LOGFLARE_BACKEND=%s\n'      "$LOGFLARE_BACKEND"
+        printf 'GOOGLE_PROJECT_ID=%s\n'     "$GOOGLE_PROJECT_ID"
+        printf 'GOOGLE_PROJECT_NUMBER=%s\n' "$GOOGLE_PROJECT_NUMBER"
     } >"$tmp"
     cat "$tmp" >"$CONFIG_FILE"
     rm -f "$tmp"

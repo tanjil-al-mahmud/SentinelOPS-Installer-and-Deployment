@@ -71,10 +71,6 @@ _install_frontend() {
     return 0
 }
 
-_install_proxy() {
-    proxy_install
-}
-
 # --- configuration ---------------------------------------------------------
 
 _install_prompt_install_dir() {
@@ -93,19 +89,7 @@ _install_collect_config() {
     supabase_prompt_config
     repo_prompt_config
 
-    section "Reverse Proxy"
-    if confirm "Deploy Caddy as the TLS-terminating reverse proxy?" y; then
-        ENABLE_CADDY="true"
-        prompt_default ACME_EMAIL "Email for Let's Encrypt notifications (blank to skip)" "$ACME_EMAIL"
-    else
-        ENABLE_CADDY="false"
-    fi
-
-    if confirm "Deploy Logflare for log aggregation?" y; then
-        ENABLE_LOGFLARE="true"
-    else
-        ENABLE_LOGFLARE="false"
-    fi
+    logflare_prompt_config
 
     config_save
 }
@@ -119,10 +103,11 @@ _install_summary() {
     section "URLs"
     status_line "Application" "" "$app_url"
     status_line "Supabase" "" "$sb_url"
-    if [[ "$ENABLE_CADDY" != "true" ]]; then
-        status_line "Frontend (host)" "" "http://<server>:${APP_PORT}"
-        status_line "Supabase (host)" "" "http://<server>:$(supabase_kong_port)"
-    fi
+
+    # No reverse proxy is installed - these are the upstreams to point one at.
+    section "Reverse proxy upstreams"
+    status_line "Frontend" "" "${APP_BIND:-127.0.0.1}:${APP_PORT}"
+    status_line "Supabase API" "" "127.0.0.1:$(supabase_kong_port)"
 
     section "Deployed"
     status_line "Supabase" "" "$(supabase_current_version)"
@@ -187,10 +172,6 @@ cmd_install() {
 
     phase_begin "Frontend image and container"
     _install_frontend || die "Frontend deployment failed."
-    phase_end
-
-    phase_begin "Reverse proxy"
-    _install_proxy
     phase_end
 
     phase_mark frontend

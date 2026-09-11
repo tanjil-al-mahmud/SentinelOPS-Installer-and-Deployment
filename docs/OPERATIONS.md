@@ -91,7 +91,7 @@ sentinel-ops status
 | Install failed mid-way | `sentinel-ops logs installer`, then re-run — completed phases are skipped |
 | Frontend not responding | `sentinel-ops logs app` |
 | Supabase unhealthy | `sentinel-ops logs supabase` |
-| TLS not working | `sentinel-ops logs proxy` — check DNS resolves to this host before ACME can succeed |
+| TLS / routing not working | Your reverse proxy — see [REVERSE-PROXY.md](REVERSE-PROXY.md). Realtime needs WebSocket headers. |
 | No logs in Studio | [docs/LOGFLARE.md](LOGFLARE.md) |
 
 ### "Supabase health check failed"
@@ -153,7 +153,8 @@ Edit `/opt/sentinel-ops/config/installer.env`, then apply:
 |---|---|
 | `SUPABASE_PUBLIC_URL`, `SITE_URL`, `API_EXTERNAL_URL` | `sentinel-ops update app` (rebuilds the bundle — these are baked in at build time) |
 | `APP_BRANCH`, `APP_REPOSITORY` | `sentinel-ops update app` |
-| `ENABLE_CADDY`, domains, `ACME_EMAIL` | `sentinel-ops install` (re-runs the proxy phase) |
+| `APP_BIND`, `APP_PORT` | `sentinel-ops update app` |
+| `ENABLE_LOGFLARE`, `LOGFLARE_BACKEND` | `sentinel-ops install` (re-runs the analytics phase) |
 
 Changing a URL requires a **rebuild**, not a restart: Vite inlines
 `VITE_SUPABASE_URL` into the JavaScript bundle.
@@ -162,7 +163,7 @@ Changing a URL requires a **rebuild**, not a restart: Vite inlines
 
 ```bash
 cd /opt/sentinel-ops/supabase && docker compose down      # keeps volumes
-docker rm -f sentinel-ops-frontend sentinel-ops-caddy
+docker rm -f sentinel-ops-frontend
 ```
 
 Add `-v` to `docker compose down` only if you intend to destroy the database.

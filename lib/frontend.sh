@@ -132,10 +132,10 @@ frontend_build_image() {
 container_exists()  { docker container inspect "$1" >/dev/null 2>&1; }
 container_running() { [[ "$(docker inspect -f '{{.State.Running}}' "$1" 2>/dev/null)" == "true" ]]; }
 
-# Bind to loopback when a reverse proxy fronts the app; otherwise the container
-# has to be reachable from outside.
+# Where the published port is bound. Defaults to loopback so the container is
+# reachable by a reverse proxy on this host but not from the public internet.
 frontend_bind_address() {
-    if [[ "$ENABLE_CADDY" == "true" ]]; then printf '127.0.0.1'; else printf '0.0.0.0'; fi
+    printf '%s' "${APP_BIND:-127.0.0.1}"
 }
 
 # Start a container from an image. frontend_run_container <name> <image> <host-port>
@@ -161,7 +161,8 @@ frontend_run_container() {
         -e "APP_PORT=${APP_PORT}"
         -p "${bind}:${host_port}:${APP_PORT}"
     )
-    # Attaching to the Supabase network lets Caddy route by container name.
+    # Attaching to the Supabase network lets a dockerised reverse proxy route to
+    # this container by name instead of going back out through the host.
     if docker network inspect "$network" >/dev/null 2>&1; then
         args+=(--network "$network")
     else

@@ -178,9 +178,6 @@ cmd_logs() {
                 supabase_compose logs --tail "$lines" -f analytics
             fi
             ;;
-        proxy|caddy)
-            docker logs --tail "$lines" -f sentinel-ops-caddy 2>&1
-            ;;
         installer)
             local latest
             latest="$(find "$LOG_DIR" -name '*.log' -type f 2>/dev/null | LC_ALL=C sort | tail -n1)"

@@ -104,37 +104,61 @@ invalidate every issued token and lock all users out.
 
 ---
 
-## 6. Logflare has two modes
+## 6. Logflare uses Supabase's own optional overlay
 
-**Plan:** Logflare is deployed separately because the default Supabase setup
-does not include it.
+**Plan:** Logflare is deployed separately because the default Supabase setup does
+not include it.
 
-**Implementation:** the installer checks. Recent Supabase releases *do* ship an
-`analytics` service; older ones do not. Deploying a second Logflare next to an
-existing one would give two instances competing for the same `_analytics`
-schema.
+**Implementation:** correct — it is not in the base stack — but upstream already
+provides the mechanism for adding it, and reimplementing that would have been a
+mistake.
 
-So: configure the bundled service when present, deploy a standalone overlay when
-not. Either way the Supabase-side variables are the same, and they are
-documented in [LOGFLARE.md](LOGFLARE.md).
+Per the [self-hosting analytics
+reference](https://supabase.com/docs/reference/self-hosting-analytics/introduction),
+`run.sh config add logs` layers `docker-compose.logs.yml` onto the base stack and
+starts two services: **analytics** (Logflare) and **vector** (log collection). The
+installer uses that path when `run.sh` exists, falls back to setting
+`COMPOSE_FILE` itself, then to a bundled `analytics` service, and only deploys its
+own compose file when upstream ships none of the above.
+
+Three things this surfaced that the original plan did not account for:
+
+- **`LOGFLARE_DB_ENCRYPTION_KEY`** is a required base64 key encrypting sensitive
+  Logflare columns. It was missing from the first implementation. It is now
+  generated once, unit-tested for round-trip integrity through the env file, and
+  re-applied after Supabase updates.
+- **Port 4000 is not published.** Upstream restricts access to the Kong gateway,
+  so the health check probes from inside the container rather than via
+  `localhost:4000`.
+- **The dashboard has no authentication.** The installer warns about this after
+  every deployment, and the reverse-proxy guide says not to expose it.
+
+A backend choice was also added, because upstream is explicit that the Postgres
+backend "is not optimized for high-volume inserts or heavy querying" and
+recommends BigQuery for production. `postgres` remains the default since it needs
+nothing provisioned.
 
 ---
 
-## 7. Caddy is optional and TLS is conditional
+## 7. No reverse proxy is installed
 
 **Plan:** Caddy in front of Supabase and the frontend.
 
-**Implementation:** as planned, but declinable at install time, and automatic
-HTTPS is only requested for a hostname that could plausibly get a certificate.
+**Implementation:** removed entirely. TLS termination, certificates and routing
+belong to the host, which usually already has a proxy, a certificate workflow and
+opinions about both. Installing a second one that binds :80 and :443 would
+conflict with whatever is already there.
 
-`localhost`, bare IP addresses, `.local` and the placeholder `*.example.com`
-domains get plain HTTP instead. Otherwise a default-domain install would hang on
-an ACME challenge that can never succeed. When Caddy is declined, the frontend
-binds `0.0.0.0` for an existing proxy to sit in front of; with Caddy it binds
-loopback only.
+What the installer owns instead is a stable contract: the frontend on
+`APP_BIND:APP_PORT` (default `127.0.0.1:3000`) and Supabase Kong on
+`127.0.0.1:8000`, both loopback-bound so nothing is publicly exposed by accident.
+`sentinel-ops status` and the post-install summary print both, and
+[REVERSE-PROXY.md](REVERSE-PROXY.md) carries worked nginx, Caddy and Traefik
+configurations plus the two failure modes that actually bite — missing WebSocket
+headers breaking Realtime, and nginx's 1 MB body limit rejecting Storage uploads.
 
-Supabase's Kong gateway is left exactly as it is — Caddy only terminates TLS and
-routes the two hostnames.
+Supabase's Kong gateway is untouched. It was never the thing that needed
+replacing.
 
 ---
 

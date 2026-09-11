@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Verify JWT signing and the proxy TLS heuristic.
+# Verify secret generation: JWT signing and the Logflare encryption key.
 #
 # The JWTs matter: on the fallback install path the installer signs the anon
 # and service_role keys itself, and a malformed token means every API request
@@ -8,13 +8,15 @@ set -uo pipefail
 
 ROOT="${1:-$(cd -P "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 
-# Minimal stubs so the libraries load outside a real installation.
 source "${ROOT}/lib/common.sh"
-SUPABASE_DIR="$(mktemp -d)"
-INSTALL_DIR="$SUPABASE_DIR"
 source "${ROOT}/lib/config.sh"
 source "${ROOT}/lib/supabase.sh"
-source "${ROOT}/lib/proxy.sh"
+
+# Point the libraries at a scratch installation. This must happen AFTER the
+# sources: config.sh declares the path variables and would blank them again.
+TMPROOT="$(mktemp -d)"
+config_set_paths "$TMPROOT"
+mkdir -p "$SUPABASE_DIR"
 
 pass=0; fail=0
 check() {
@@ -81,17 +83,21 @@ else
     printf 'FAIL  random_token repeated\n'; fail=$((fail+1))
 fi
 
-# --- TLS capability heuristic ---------------------------------------------
-# Anything that cannot obtain a public certificate must be rejected, or the
-# install stalls on a doomed ACME challenge.
-_proxy_tls_capable "app.sentinelops.io"; ok  "real domain is TLS capable" "$?"
-_proxy_tls_capable "localhost";          nok "localhost rejected"         "$?"
-_proxy_tls_capable "192.168.1.10";       nok "bare IPv4 rejected"         "$?"
-_proxy_tls_capable "app.example.com";    nok "placeholder domain rejected" "$?"
-_proxy_tls_capable "myhost";             nok "hostname without dot rejected" "$?"
-_proxy_tls_capable "";                   nok "empty rejected"             "$?"
-_proxy_tls_capable "box.local";          nok ".local rejected"            "$?"
+# --- Logflare encryption key ----------------------------------------------
+# Upstream requires LOGFLARE_DB_ENCRYPTION_KEY to be base64. openssl emits
+# padding and the +/ alphabet, all of which must survive a round trip through
+# the env file - a corrupted key makes Logflare unable to read its own columns.
+ENVF="${SUPABASE_DIR}/.env"
+: >"$ENVF"
+key="$(openssl rand -base64 32)"
+env_set "$ENVF" LOGFLARE_DB_ENCRYPTION_KEY "$key"
+check "base64 key round trips" "$key" "$(env_get "$ENVF" LOGFLARE_DB_ENCRYPTION_KEY)"
+check "base64 key is 44 chars" "44" "${#key}"
+
+# A value containing '=' must not be truncated at the first separator.
+env_set "$ENVF" PADDED "abc=def=="
+check "value with = preserved" "abc=def==" "$(env_get "$ENVF" PADDED)"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
-rm -rf "$SUPABASE_DIR"
+rm -rf "$TMPROOT"
 [[ $fail -eq 0 ]]
