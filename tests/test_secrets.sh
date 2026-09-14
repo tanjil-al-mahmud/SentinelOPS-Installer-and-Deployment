@@ -98,6 +98,49 @@ check "base64 key is 44 chars" "44" "${#key}"
 env_set "$ENVF" PADDED "abc=def=="
 check "value with = preserved" "abc=def==" "$(env_get "$ENVF" PADDED)"
 
+# --- Placeholder detection -------------------------------------------------
+#
+# These are the exact values Supabase ships in docker/.env.example. Every one
+# must be replaced: a deployment that keeps any of them is compromised out of
+# the box. VAULT_ENC_KEY, DASHBOARD_PASSWORD and SECRET_KEY_BASE carry no
+# obvious placeholder marker, which is precisely why this table exists rather
+# than a "looks secret-ish" substring heuristic.
+_check_placeholder() {
+    local desc="$1" value="$2"
+    if _is_placeholder "$value"; then
+        printf 'PASS  %s\n' "$desc"; pass=$((pass+1))
+    else
+        printf 'FAIL  %s\n        upstream value would be kept: [%s]\n' "$desc" "$value"
+        fail=$((fail+1))
+    fi
+}
+_check_not_placeholder() {
+    local desc="$1" value="$2"
+    if _is_placeholder "$value"; then
+        printf 'FAIL  %s\n        generated value treated as placeholder: [%s]\n' "$desc" "$value"
+        fail=$((fail+1))
+    else
+        printf 'PASS  %s\n' "$desc"; pass=$((pass+1))
+    fi
+}
+
+_check_placeholder "placeholder JWT_SECRET"         'your-super-secret-jwt-token-with-at-least-32-characters-long'
+_check_placeholder "placeholder POSTGRES_PASSWORD"  'your-super-secret-and-long-postgres-password'
+_check_placeholder "placeholder POOLER_TENANT_ID"   'your-tenant-id'
+_check_placeholder "placeholder LOGFLARE token"     'your-super-secret-and-long-logflare-key-public'
+_check_placeholder "placeholder VAULT_ENC_KEY"      'your-32-character-encryption-key'
+_check_placeholder "placeholder DASHBOARD_PASSWORD" 'this_password_is_insecure_and_should_be_updated'
+_check_placeholder "placeholder SECRET_KEY_BASE"    'UpNVntn3cDxHJpq99YMc1T1AQgQpc8kfYTuRgBiYa15BLrx8etQoXz3gZv1/u2oq'
+_check_placeholder "placeholder empty value"        ''
+_check_placeholder "placeholder demo ANON_KEY" \
+    'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyAgCiAgICAicm9sZSI6ICJhbm9uIiwKICAgICJpc3MiOiAic3VwYWJhc2UtZGVtbyIsCiAgICAiaWF0IjogMTY0MTc2OTIwMCwKICAgICJleHAiOiAxNzk5NTM1NjAwCn0.dc_X5iR_VP_qT0zsiyj_I_OZ2T9FtRU2BBNWN8Bu4GE'
+
+# A freshly generated secret must NOT be mistaken for a placeholder, or every
+# run would rotate it and lock every existing user out.
+_check_not_placeholder "generated token kept"    "$(random_token 32)"
+_check_not_placeholder "generated b64 key kept"  "$(openssl rand -base64 32)"
+_check_not_placeholder "issued anon jwt kept"    "$(_sign_jwt 'test-secret' anon 1700000000 2000000000)"
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 rm -rf "$TMPROOT"
 [[ $fail -eq 0 ]]

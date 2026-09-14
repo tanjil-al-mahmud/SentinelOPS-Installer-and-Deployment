@@ -14,7 +14,7 @@ sentinel-ops status     # prints both under "URLs"
 
 | Upstream | Default | What it serves |
 |---|---|---|
-| Frontend | `127.0.0.1:3000` | The React application (nginx serving the static bundle) |
+| Frontend | `127.0.0.1:3000` | The React application (Node running the Nitro SSR server) |
 | Supabase API | `127.0.0.1:8000` | Kong — REST, Auth, Storage, Realtime, Edge Functions, Studio |
 
 Both bind to **loopback only** by default (`APP_BIND=127.0.0.1` in

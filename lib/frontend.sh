@@ -13,13 +13,20 @@ FRONTEND_BUILD_MODE="${FRONTEND_BUILD_MODE:-docker}"
 # Application environment
 # ---------------------------------------------------------------------------
 
-# Generate app/.env from the live Supabase configuration.
+# Generate app/.env.local from the live Supabase configuration.
 #
 # Keys the installer owns are always refreshed (they are derived values, and a
 # stale Supabase URL is a broken deployment). Any other key an operator added
 # is preserved.
+#
+# .env.local rather than .env: the application repository *tracks* .env, so
+# writing there leaves the checkout permanently dirty and the next
+# `git merge --ff-only` in `update app` aborts with "the local checkout has
+# diverged". Vite reads .env.local with higher precedence than .env, and the
+# repository's .gitignore already covers *.local, so this overrides the
+# committed values without touching version control.
 app_env_generate() {
-    local env_file="${APP_DIR}/.env"
+    local env_file="${APP_DIR}/.env.local"
     local pub_key project_id
 
     if ! pub_key="$(supabase_publishable_key)"; then
@@ -44,6 +51,14 @@ app_env_generate() {
 
     chmod 640 "$env_file" 2>/dev/null || true
     log_ok "Application environment written to ${env_file}"
+
+    # An earlier installer version wrote the tracked .env directly. Say so once,
+    # rather than letting `update app` fail later with a confusing merge error.
+    if repo_is_cloned && [[ -n "$(app_git status --porcelain -- .env 2>/dev/null)" ]]; then
+        log_warn "The checkout has local modifications to the tracked .env file."
+        log_warn "This installer no longer writes it. Discard them with:"
+        log_warn "  git -C ${APP_DIR} checkout -- .env"
+    fi
     return 0
 }
 
@@ -64,8 +79,6 @@ frontend_provision_build_files() {
     fi
 
     [[ -f "${APP_DIR}/.dockerignore" ]] || cp "${src}/dockerignore" "${APP_DIR}/.dockerignore"
-    # nginx config is referenced by the template Dockerfile.
-    [[ -f "${APP_DIR}/nginx.conf" ]] || cp "${src}/nginx.conf" "${APP_DIR}/nginx.conf"
     return 0
 }
 
@@ -159,6 +172,11 @@ frontend_run_container() {
         --restart unless-stopped
         -e "NODE_ENV=production"
         -e "APP_PORT=${APP_PORT}"
+        # Nitro's node-server listens on PORT/HOST. HOST must be 0.0.0.0 or the
+        # server binds to loopback *inside* the container and the published port
+        # reaches nothing.
+        -e "PORT=${APP_PORT}"
+        -e "HOST=0.0.0.0"
         -p "${bind}:${host_port}:${APP_PORT}"
     )
     # Attaching to the Supabase network lets a dockerised reverse proxy route to

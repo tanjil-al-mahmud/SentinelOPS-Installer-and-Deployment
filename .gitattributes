@@ -14,3 +14,9 @@ Caddyfile       text eol=lf
 .dockerignore   text eol=lf
 bin/*           text eol=lf
 assets/app/dockerignore text eol=lf
+
+# PowerShell and cmd files are executed on Windows. LF works fine for .ps1,
+# but a .cmd shim is read by cmd.exe, which wants CRLF.
+*.ps1           text eol=lf
+*.cmd           text eol=crlf
+*.psm1          text eol=lf

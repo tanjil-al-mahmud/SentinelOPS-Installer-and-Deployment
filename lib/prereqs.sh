@@ -68,7 +68,27 @@ install_base_prerequisites() {
 #   1. the client binary exists
 #   2. the daemon answers (`docker info`)
 #   3. compose v2 is available
-docker_binary_ok() { have_cmd docker; }
+# The binary must exist *and* actually run.
+#
+# `have_cmd docker` alone is not enough. On WSL with Windows PATH interop a
+# Docker Desktop docker.exe sits on PATH but cannot work inside the distro
+# unless WSL integration is enabled: it exits non-zero with an explanatory
+# message instead of printing a version. The installer would then report
+# "Docker installed ()" - note the empty parentheses - skip installing Docker,
+# and fail later on the daemon check with no hint as to the real cause.
+docker_binary_ok() {
+    have_cmd docker || return 1
+    docker --version >/dev/null 2>&1
+}
+
+# True when the docker on PATH is a Windows executable reached through WSL
+# interop rather than a Linux client.
+docker_is_windows_shim() {
+    local path
+    path="$(command -v docker 2>/dev/null)" || return 1
+    [[ "$path" == /mnt/* || "$path" == *.exe ]]
+}
+
 docker_daemon_ok() { docker info >/dev/null 2>&1; }
 
 detect_compose() {
@@ -113,12 +133,21 @@ install_docker() {
 # Full Docker readiness gate used by install and every update path.
 ensure_docker() {
     if ! docker_binary_ok; then
-        log_info "Docker is not installed."
+        if docker_is_windows_shim; then
+            log_warn "The 'docker' on PATH is a Windows executable ($(command -v docker))."
+            log_warn "It cannot drive containers from inside this distro."
+            log_warn "Either enable WSL integration for this distro in Docker Desktop,"
+            log_warn "or let this installer install Docker natively here."
+        else
+            log_info "Docker is not installed."
+        fi
         if ! confirm "Install Docker now?" y; then
             log_error "Docker is required. Aborting."
             return 1
         fi
         install_docker || return 1
+        # A freshly installed Linux client must win over any Windows shim.
+        hash -r 2>/dev/null || true
     fi
 
     if ! docker_binary_ok; then

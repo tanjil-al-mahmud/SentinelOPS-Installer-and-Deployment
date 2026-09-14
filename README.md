@@ -1,8 +1,12 @@
 # Sentinel Ops — Installer & Deployment
 
-A Linux-only installation and update system for the Sentinel Ops stack:
-self-hosted **Supabase**, **Logflare**, and the **Sentinel Ops React frontend**,
-all running under Docker.
+An installation and update system for the Sentinel Ops stack: self-hosted
+**Supabase**, **Logflare**, and the **Sentinel Ops React frontend**, all running
+under Docker.
+
+Two builds, same commands and same deployment: a shell installer for Linux
+servers, and a native PowerShell port for Windows — see
+[docs/WINDOWS.md](docs/WINDOWS.md).
 
 A clean supported server plus a deployment key becomes a working Sentinel Ops
 installation with one command, and every subsequent release ships with
@@ -51,9 +55,10 @@ sentinel-ops credentials     # generated Supabase credentials
 sudo ./install.sh --yes
 ```
 
-`--yes` accepts every default, **including the placeholder `*.example.com`
-domains**. Write `config/installer.env` first, or install once interactively and
-copy that file to the next server.
+`--yes` accepts every default. The endpoint defaults are **localhost** — a
+non-interactive run produces a deployment that works on that host and nowhere
+else. To serve it under a real domain, write `config/installer.env` first, or
+install once interactively and copy that file to the next server.
 
 ---
 
@@ -79,12 +84,13 @@ chmod 600 deploy_key
 Place it **before** running — it is needed partway through, after Supabase comes
 up.
 
-**DNS.** Point both hostnames at this server before installing, so your reverse
-proxy can obtain certificates:
+**DNS.** Only needed if you are serving this under a domain rather than on
+localhost. Point both hostnames at this server before installing, so your
+reverse proxy can obtain certificates:
 
 ```bash
-dig +short app.example.com
-dig +short supabase.example.com
+dig +short app.your-domain.tld
+dig +short supabase.your-domain.tld
 ```
 
 **Firewall.** Nothing in this stack should be publicly exposed except through
@@ -132,10 +138,17 @@ Global options: `--dir <path>`, `--yes`, `--show`, `--force`, `--debug`.
 |---|---|
 | Debian | Debian, Ubuntu (and derivatives via `ID_LIKE`) |
 | RHEL | RHEL, CentOS, Fedora, Rocky, AlmaLinux |
+| Windows | Windows 10 1809+, Windows 11, Windows Server 2019+ |
 
-The installer refuses to run anywhere else, and refuses to run on non-Linux
-kernels. Prerequisites (`curl`, `git`, `openssl`, `jq`, `ssh`, Docker, Docker
-Compose) are verified and installed when missing.
+The shell installer refuses to run on a non-Linux kernel and points you at the
+Windows build; the Windows build does the reverse. Prerequisites are verified
+and installed when missing — `curl`, `git`, `openssl`, `jq`, `ssh` on Linux;
+just `git` and `ssh` on Windows, where HTTP, crypto and JSON come from .NET.
+
+The Windows build needs Docker Desktop in **Linux-container mode** with the WSL2
+backend, and additionally checks for that. It does not require Administrator:
+it tests whether the install directory is writable instead, which a standard
+user normally is for `C:\SentinelOps`.
 
 Docker is checked at three levels, because `docker --version` succeeding proves
 nothing: the **binary** exists, the **daemon** answers, and a **container
@@ -179,8 +192,8 @@ actually runs**.
               ┌────┴─────┐
               ▼          ▼
       127.0.0.1:8000   127.0.0.1:3000
-      Supabase Kong    Sentinel Ops frontend
-              │        (nginx, static bundle)
+      Supabase gateway  Sentinel Ops frontend
+              │        (Node, Nitro SSR server)
               ▼
          PostgreSQL ──► Logflare / vector
 ```
@@ -285,18 +298,29 @@ Full detail in [docs/LOGFLARE.md](docs/LOGFLARE.md).
 
 ## Frontend build
 
-The default build mode is **`docker`**: `npm ci` and `npm run build` run inside
-a multi-stage image, so the server needs no Node.js toolchain and the build is
-reproducible. The runtime image is nginx serving the static bundle — no Node,
-no source, no `node_modules`.
+The default build mode is **`docker`**: dependency install and the build run
+inside a multi-stage image, so the server needs no JavaScript toolchain and the
+build is reproducible.
 
-Set `FRONTEND_BUILD_MODE=host` to run `npm ci` / `npm run build` on the host and
-package the resulting `dist/` instead. This requires Node.js on the server.
+Dependencies are installed from whichever lockfile the repository actually
+maintains — `bun.lock`, `pnpm-lock.yaml`, `yarn.lock`, then `package-lock.json`,
+most specific first — and always from the lock rather than resolving afresh. The
+builder is `node:22-alpine`, which several of the application's dependencies
+require.
 
-`assets/app/Dockerfile`, `nginx.conf` and `.dockerignore` belong in the
-application repository. Until they are committed there, the installer copies its
-own templates into the checkout; a `Dockerfile` already present in the repo
-always wins.
+The application is a **TanStack Start / Nitro** app: it server-renders its HTML,
+so there is no static bundle to host. The build pins Nitro's `node-server`
+preset (the repository targets `netlify`; the override applies inside the build
+layer only) and the runtime image runs `node .output/server/index.mjs` as an
+unprivileged user — no source, no `node_modules`, no build toolchain.
+
+Set `FRONTEND_BUILD_MODE=host` to build on the host and package the resulting
+`.output/` instead. This requires Node.js on the server.
+
+`assets/app/Dockerfile` and `.dockerignore` belong in the application
+repository. Until they are committed there, the installer copies its own
+templates into the checkout; a `Dockerfile` already present in the repo always
+wins.
 
 ---
 
@@ -331,6 +355,8 @@ tests for the helpers that the deployment logic depends on.
 
 ## Further reading
 
+- [docs/WINDOWS.md](docs/WINDOWS.md) — the Windows build, and the five places it
+  deliberately differs from the shell one
 - [docs/OPERATIONS.md](docs/OPERATIONS.md) — day-two runbook and troubleshooting
 - [docs/REVERSE-PROXY.md](docs/REVERSE-PROXY.md) — upstreams and example proxy configs
 - [docs/LOGFLARE.md](docs/LOGFLARE.md) — analytics setup, backends and variables

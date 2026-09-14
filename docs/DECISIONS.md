@@ -52,19 +52,22 @@ entry for a migration that did not run.
 **Plan:** step 19 `npm ci`, step 20 `npm run build`, step 21 build the Docker
 image. The plan also states a multi-stage build is preferred.
 
-**Implementation:** multi-stage by default — `npm ci` and `npm run build` run
-*inside* stage 1 of the image build.
+**Implementation:** multi-stage by default — dependency install and the build
+run *inside* stage 1 of the image build.
 
 These two readings conflict, and the multi-stage one is better:
 
-- the server needs **no Node.js toolchain at all**
+- the server needs **no JavaScript toolchain at all**
 - the build cannot be contaminated by whatever Node version the host happens to
   have
 - Docker layer caching makes dependency installs free when only source changed
 
-The host path is still available via `FRONTEND_BUILD_MODE=host`, which runs
-`npm ci` / `npm run build` on the server and packages the resulting `dist/`. The
-Dockerfile supports both through a `BUILD_MODE` build argument.
+The host path is still available via `FRONTEND_BUILD_MODE=host`, which builds on
+the server and packages the resulting `.output/`. The Dockerfile supports both
+through a `BUILD_MODE` build argument.
+
+See §11 for why the install step is not simply `npm ci`, and §15 for why the
+runtime image is Node rather than nginx.
 
 ---
 
@@ -76,6 +79,8 @@ application repository.
 **Implementation:** they live in `assets/app/` and are copied into the checkout
 when it does not already contain them. A `Dockerfile` present in the repository
 always takes precedence.
+
+`nginx.conf` used to ship alongside them and no longer does — see §15.
 
 The application repository is a separate repository that this installer only has
 read access to, so the files cannot be committed there from here. **These
@@ -196,3 +201,160 @@ migrations or restoring a whole-database backup — silently discarding every
 write since the deployment. Rolling application code back onto a slightly newer
 schema is usually fine; silently destroying data is never fine. The command
 prints the relevant backup path so the operator can make that call explicitly.
+
+---
+
+## 11. The build uses the lockfile the repository actually maintains
+
+The Dockerfile template installs with `bun`, `pnpm`, `yarn` or `npm`, chosen by
+which lockfile is present — most specific first — and always from the lock
+rather than resolving afresh.
+
+Assuming npm looked safe and was not. The Sentinel Ops application repository
+carries a `package-lock.json` alongside `bun.lock`, and only the bun lockfile
+tracks `package.json`; the npm one had drifted five weeks out of date. `npm ci`
+correctly refused, with a wall of `Missing: X from lock file` that reads like a
+registry problem rather than a stale lockfile.
+
+The builder image is `node:22-alpine`, not 20: several dependencies declare
+`"engines": { "node": ">=22.12.0" }`.
+
+Deliberately **not** done: falling back to `npm install` when `npm ci` fails.
+That would paper over lockfile drift and produce a build nobody can reproduce.
+A failed `npm ci` is a real signal and should stop the deployment.
+
+---
+
+## 12. Gateway health probes send an API key
+
+Supabase replaced Kong with Envoy as the stack's API gateway. Envoy's RBAC
+filter rejects every route without an `apikey` — including `/auth/v1/health`,
+which Kong served unauthenticated.
+
+A probe that omits the key therefore gets a flat `401` from a completely healthy
+stack, so the installer's own health check failed an otherwise successful
+install. The probes now send the publishable key, and the auth check falls back
+to asking the GoTrue container directly when the gateway refuses us: the gateway
+declining to authorize a probe says nothing about whether auth is up.
+
+The API and Studio probes accept `403` for the same reason.
+
+---
+
+## 13. `known_hosts` is validated, not assumed
+
+`ssh-keyscan` can fail while exiting successfully — the build in
+`C:\Windows\System32\OpenSSH` cannot negotiate with GitHub and returns no keys
+at all. Appending its output blindly produces a `known_hosts` that parses but
+holds no usable key, which surfaces much later as `Host key verification failed`
+and looks like a deploy-key problem.
+
+Both builds now keep only lines shaped `<host> <keytype> <base64>`, and fall
+back to `StrictHostKeyChecking=accept-new` when no key could be retrieved. The
+Windows build additionally tries Git for Windows' bundled `ssh-keyscan` when the
+one on `PATH` yields nothing.
+
+---
+
+## 14. Placeholder secrets are matched against a list, not a pattern
+
+`_is_placeholder` decides which of upstream's `.env.example` values get
+replaced. A substring heuristic (`*your-super-secret*` and friends) missed three
+of them, because Supabase does not mark them as placeholders:
+
+| Key | Upstream value |
+|---|---|
+| `SECRET_KEY_BASE` | `UpNVntn3cDxHJpq99YMc1T1AQgQpc8kf...` — looks generated |
+| `VAULT_ENC_KEY` | `your-32-character-encryption-key` |
+| `DASHBOARD_PASSWORD` | `this_password_is_insecure_and_should_be_updated` |
+
+Every install therefore shipped with the Phoenix signing key, the Vault
+encryption key and the Studio password that are published in Supabase's own
+repository. The check is now an explicit table, including the literal
+`SECRET_KEY_BASE` string and a decoder for the demo `supabase-demo` JWTs, and
+`tests/test_secrets.sh` asserts each one.
+
+---
+
+## 15. The frontend runs as a Node server, not static files behind nginx
+
+**Original implementation:** build with Vite, copy `dist/` into an nginx image,
+serve it as a static single-page application.
+
+That cannot work for this application. Sentinel Ops is a **TanStack Start /
+Nitro** app: it server-renders its HTML. `vite build` emits hashed client assets
+into `dist/` and a *server bundle* elsewhere — there is no `index.html` at all,
+because the HTML is produced per request.
+
+The failure mode was the dangerous kind. Copying that `dist/` into nginx
+produced a web root full of assets that nothing referenced, and nginx quietly
+served its own `Welcome to nginx!` page. The container was healthy, `/` returned
+`200`, `sentinel-ops status` reported **HTTP health ✓ Healthy**, and the
+installer printed *Installation Complete* — while serving no application at all.
+
+The runtime image is now `node:22-alpine` running
+`node .output/server/index.mjs` as an unprivileged user. Nitro bundles every
+runtime dependency into `.output/`, so the image still carries no source and no
+`node_modules`.
+
+Two supporting details:
+
+- **The preset is pinned at build time.** The repository's `vite.config.ts`
+  sets `nitro: { preset: "netlify" }`, and `NITRO_PRESET` does *not* override an
+  explicit preset. The build rewrites it to `node-server` in the copied source
+  inside the build layer, so the repository stays deployable to Netlify
+  unchanged.
+- **The build asserts its own output.** Missing `.output/`, or a missing
+  `.output/server/index.mjs`, fails the build with an explicit message. A
+  deployment that serves nothing must never report success again.
+
+---
+
+## 16. The generated application env goes to `.env.local`
+
+The application repository **tracks** `.env`. Writing the generated Supabase
+settings there left the checkout permanently dirty, so the `git merge --ff-only`
+in `sentinel-ops update app` would abort with "the local checkout has diverged"
+the first time an upstream commit touched that file — a failure with no visible
+connection to its cause.
+
+Vite reads `.env.local` at higher precedence than `.env`, and the repository's
+`.gitignore` already covers `*.local`. Writing there overrides the committed
+values and leaves version control alone. The installer warns once if it finds
+local modifications to the tracked `.env` left by an earlier version.
+
+---
+
+## 17. The deployment key is normalised to LF
+
+A private key that has been through Windows — created there, emailed, pasted
+into Notepad, or copied out of a Windows checkout — carries CRLF line endings.
+OpenSSH rejects it with:
+
+```
+Load key "/opt/sentinel-ops/config/deploy_key": error in libcrypto
+git@github.com: Permission denied (publickey).
+```
+
+That message reads like a corrupt or unregistered key, and sends operators off
+regenerating and re-registering a deploy key that was fine all along. The
+installer strips the CRs after validating the key and before using it. Both
+builds do this; it was found by running the Linux installer with a key that had
+worked on Windows, where the Windows port already normalised it.
+
+---
+
+## 18. A `docker` on PATH is not proof of a usable Docker
+
+`docker_binary_ok` checked only that the command existed. On WSL with Windows
+PATH interop that is satisfied by Docker Desktop's `docker.exe`, which cannot
+drive containers from inside the distro unless WSL integration is enabled — it
+exits non-zero with an explanatory message instead of printing a version.
+
+The installer therefore reported `[OK] Docker installed ()` — note the empty
+parentheses where the version should be — skipped installing Docker, and failed
+several steps later on the daemon check with nothing pointing at the real cause.
+
+The check now requires `docker --version` to actually succeed, and when the
+binary turns out to be a Windows executable the installer says so and offers to
+install Docker natively instead.

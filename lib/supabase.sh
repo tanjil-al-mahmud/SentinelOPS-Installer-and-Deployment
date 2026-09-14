@@ -198,19 +198,49 @@ _sign_jwt() {
     printf '%s.%s.%s' "$header" "$payload" "$signature"
 }
 
+# Is this token one of the demo JWTs upstream ships? They are issued by
+# "supabase-demo" and signed with the published example secret, so a deployment
+# that keeps them is wide open.
+_jwt_is_demo() {
+    local token="$1" payload
+    [[ "$token" == eyJ* ]] || return 1
+    payload="${token#*.}"
+    payload="${payload%%.*}"
+    [[ -n "$payload" ]] || return 1
+    # base64url -> base64, then pad to a multiple of four.
+    payload="$(printf '%s' "$payload" | tr '_-' '/+')"
+    case $(( ${#payload} % 4 )) in
+        2) payload="${payload}==" ;;
+        3) payload="${payload}=" ;;
+    esac
+    printf '%s' "$payload" | openssl base64 -d -A 2>/dev/null | grep -q 'supabase-demo'
+}
+
+# Is this value still an upstream placeholder (or absent)?
+#
+# Matched against the values Supabase actually ships in .env.example rather than
+# a generic "looks secret-ish" guess. Several of them - VAULT_ENC_KEY,
+# DASHBOARD_PASSWORD and above all SECRET_KEY_BASE - carry no obvious
+# placeholder marker, so a substring heuristic silently leaves upstream's
+# published value in place on every install.
+_is_placeholder() {
+    local v="$1"
+    [[ -z "$v" ]] && return 0
+    case "$v" in
+        *your-super-secret*|*your-tenant-id*|*replace-me*|*example*|*super-secret-jwt*) return 0 ;;
+        *your-32-character*|*this_password_is_insecure*|*changeme*|*change-me*)         return 0 ;;
+        # Published verbatim in upstream's .env.example. It looks like a real
+        # secret, which is exactly why it has to be listed explicitly.
+        'UpNVntn3cDxHJpq99YMc1T1AQgQpc8kfYTuRgBiYa15BLrx8etQoXz3gZv1/u2oq')              return 0 ;;
+    esac
+    _jwt_is_demo "$v" && return 0
+    return 1
+}
+
 # Fill in any secret that is missing or still at its upstream placeholder.
 supabase_generate_secrets() {
     local env_file="${SUPABASE_DIR}/.env"
     local changed=0 iat exp jwt_secret
-
-    _is_placeholder() {
-        local v="$1"
-        [[ -z "$v" ]] && return 0
-        case "$v" in
-            *your-super-secret*|*your-tenant-id*|*replace-me*|*example*|*super-secret-jwt*) return 0 ;;
-        esac
-        return 1
-    }
 
     jwt_secret="$(env_get "$env_file" JWT_SECRET || true)"
     if _is_placeholder "$jwt_secret"; then
@@ -224,6 +254,23 @@ supabase_generate_secrets() {
         env_set "$env_file" ANON_KEY "$(_sign_jwt "$jwt_secret" anon "$iat" "$exp")"
         env_set "$env_file" SERVICE_ROLE_KEY "$(_sign_jwt "$jwt_secret" service_role "$iat" "$exp")"
         log_info "Generated JWT secret and API keys"
+    fi
+
+    # A real JWT secret paired with demo API keys is still a broken deployment:
+    # reissue the keys against whatever secret is now in place.
+    jwt_secret="$(env_get "$env_file" JWT_SECRET || true)"
+    if [[ -n "$jwt_secret" ]]; then
+        local anon_key service_key
+        anon_key="$(env_get "$env_file" ANON_KEY || true)"
+        service_key="$(env_get "$env_file" SERVICE_ROLE_KEY || true)"
+        if _is_placeholder "$anon_key" || _is_placeholder "$service_key"; then
+            iat="$(date +%s)"
+            exp=$(( iat + 60 * 60 * 24 * 365 * 10 ))
+            env_set "$env_file" ANON_KEY "$(_sign_jwt "$jwt_secret" anon "$iat" "$exp")"
+            env_set "$env_file" SERVICE_ROLE_KEY "$(_sign_jwt "$jwt_secret" service_role "$iat" "$exp")"
+            changed=1
+            log_info "Reissued the Supabase API keys"
+        fi
     fi
 
     local key val
@@ -384,29 +431,47 @@ _http_code() {
     curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$@" 2>/dev/null || printf '000'
 }
 
+# Current Supabase releases front the stack with Envoy instead of Kong, and
+# Envoy's RBAC filter rejects EVERY route without an apikey - including
+# /auth/v1/health, which Kong used to serve unauthenticated. A probe that omits
+# the key gets a flat 401 from a perfectly healthy stack, which is exactly how
+# an otherwise successful install ends up failing its own health check.
 supabase_check_api() {
-    local port code
+    local port code key args=()
     port="$(supabase_kong_port)"
-    # Kong answers 401 without an API key, which still proves the gateway and
-    # the upstream route are alive.
-    code="$(_http_code "http://localhost:${port}/rest/v1/")"
-    [[ "$code" =~ ^(200|401|404)$ ]]
+    key="$(supabase_publishable_key 2>/dev/null || true)"
+    [[ -n "$key" ]] && args=(-H "apikey: ${key}")
+    # Any of these proves the gateway routed to PostgREST rather than failing to
+    # reach it: 200 from an open deployment, 401/403 from the gateway's own
+    # authorization filter, 404 when the bare root is not a route.
+    code="$(_http_code "${args[@]}" "http://localhost:${port}/rest/v1/")"
+    [[ "$code" =~ ^(200|401|403|404)$ ]]
 }
 
 supabase_check_auth() {
-    local port code
+    local port code key args=() cid
     port="$(supabase_kong_port)"
-    code="$(_http_code "http://localhost:${port}/auth/v1/health")"
-    [[ "$code" == "200" ]]
+    key="$(supabase_publishable_key 2>/dev/null || true)"
+    [[ -n "$key" ]] && args=(-H "apikey: ${key}")
+    code="$(_http_code "${args[@]}" "http://localhost:${port}/auth/v1/health")"
+    [[ "$code" == "200" ]] && return 0
+
+    # The gateway is reachable but refused us. That says nothing about GoTrue,
+    # so ask the container directly rather than reporting a false failure.
+    cid="$(supabase_container_id auth)"
+    [[ -n "$cid" ]] || return 1
+    docker exec "$cid" wget -qO- http://127.0.0.1:9999/health >/dev/null 2>&1
 }
 
 supabase_check_studio() {
     # Studio is not always routed through Kong, so fall back to the container's
     # own health status.
-    local port code health
+    local port code health key args=()
     port="$(supabase_kong_port)"
-    code="$(_http_code "http://localhost:${port}/")"
-    [[ "$code" =~ ^(200|301|302|401)$ ]] && return 0
+    key="$(supabase_publishable_key 2>/dev/null || true)"
+    [[ -n "$key" ]] && args=(-H "apikey: ${key}")
+    code="$(_http_code "${args[@]}" "http://localhost:${port}/")"
+    [[ "$code" =~ ^(200|301|302|401|403)$ ]] && return 0
     health="$(supabase_service_health studio 2>/dev/null || true)"
     [[ "$health" == "healthy" || "$health" == "none" ]] && supabase_service_running studio
 }

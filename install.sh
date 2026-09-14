@@ -79,8 +79,9 @@ chmod +x "$CLI" 2>/dev/null || true
 
 # When this script arrived through a pipe, stdin is the script itself rather
 # than the terminal. Reattach the controlling terminal so the installer can
-# still ask its questions - without this it would silently accept every default,
-# including the placeholder example.com domains.
+# still ask its questions - without this it would silently accept every default
+# (localhost endpoints), which is fine for a local deployment but not for one
+# that needs to be reachable under a real domain.
 if [[ ! -t 0 && -e /dev/tty ]] && (: >/dev/tty) 2>/dev/null; then
     exec 0</dev/tty
 fi

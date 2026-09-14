@@ -23,9 +23,12 @@ RUNTIME_DIR=""
 APP_REPOSITORY="git@github.com:BrainStation-23/sentinel-ops.git"
 APP_BRANCH="main"
 DEPLOY_KEY=""
-SUPABASE_PUBLIC_URL="https://supabase.example.com"
-API_EXTERNAL_URL="https://supabase.example.com"
-SITE_URL="https://app.example.com"
+# Public endpoints. The defaults are the local ports the stack actually binds,
+# so an install with no arguments produces a working deployment on this host.
+# Pass real hostnames (or answer the prompts) when putting it behind a domain.
+SUPABASE_PUBLIC_URL="http://localhost:8000"
+API_EXTERNAL_URL="http://localhost:8000"
+SITE_URL="http://localhost:3000"
 APP_PORT="3000"
 # Where the frontend's published port is bound. The reverse proxy is the
 # operator's responsibility, so the default is loopback: a proxy on this host

@@ -3,25 +3,62 @@
 # This file belongs in the Sentinel Ops application repository. The installer
 # only supplies it when the repository does not carry one of its own.
 #
-# Stage 1 builds the React/Vite bundle, stage 2 serves the static output from
-# nginx. The runtime image contains no Node.js, no source and no node_modules.
+# The application is a TanStack Start / Nitro app: it server-renders its HTML,
+# so there is no index.html to serve statically. Stage 1 builds it with Nitro's
+# node-server preset, stage 2 runs the resulting server bundle under Node.
+#
+# The repository's own vite.config.ts targets the netlify preset. That is left
+# alone - NITRO_PRESET overrides it for this build only, so self-hosting here
+# and deploying to Netlify from the same source stay compatible.
 
-# docker - npm ci and the build run inside this image (default; the server
-#          needs no Node.js toolchain).
-# host   - the build already ran on the host and dist/ is copied in as-is.
+# docker - dependency install and the build run inside this image (default; the
+#          server needs no JavaScript toolchain).
+# host   - the build already ran on the host and .output/ is copied in as-is.
 ARG BUILD_MODE=docker
 
 # ---------------------------------------------------------------------------
 # Stage 1a: build inside Docker
+#
+# Node 22 rather than 20: several of the application's dependencies declare
+# "engines": { "node": ">=22.12.0" }, and building under 20 produces a stream of
+# EBADENGINE warnings ahead of a failure that is hard to read back to its cause.
 # ---------------------------------------------------------------------------
-FROM node:20-alpine AS builder-docker
+FROM node:22-alpine AS builder-docker
+
+# bun, copied from its official image rather than installed over the network,
+# so the build stays reproducible and needs no extra tooling in this layer.
+COPY --from=oven/bun:1-alpine /usr/local/bin/bun /usr/local/bin/bun
 
 WORKDIR /app
 
-# Dependencies are installed from the lockfile first so that Docker can reuse
-# this layer whenever only application source changed.
-COPY package.json package-lock.json* ./
-RUN if [ -f package-lock.json ]; then npm ci; else npm install; fi
+# Whichever lockfiles the repository has. The trailing * on each makes the
+# entry optional, so a project carrying only one of them still builds.
+COPY package.json bun.lock* bun.lockb* pnpm-lock.yaml* yarn.lock* package-lock.json* ./
+
+# Install from the lockfile the project actually maintains.
+#
+# Guessing wrong here is not a cosmetic problem: a repository whose real package
+# manager is bun can carry a package-lock.json that has drifted weeks out of
+# sync, and `npm ci` then fails with a wall of "Missing: X from lock file". The
+# order below is most-specific first, and every branch installs from the lock
+# rather than resolving afresh, so the build stays reproducible.
+RUN set -eu; \
+    if [ -f bun.lockb ] || [ -f bun.lock ]; then \
+        echo "==> bun install --frozen-lockfile"; \
+        bun install --frozen-lockfile; \
+    elif [ -f pnpm-lock.yaml ]; then \
+        echo "==> pnpm install --frozen-lockfile"; \
+        corepack enable && corepack prepare pnpm@latest --activate && pnpm install --frozen-lockfile; \
+    elif [ -f yarn.lock ]; then \
+        echo "==> yarn install --immutable"; \
+        corepack enable && yarn install --immutable; \
+    elif [ -f package-lock.json ]; then \
+        echo "==> npm ci"; \
+        npm ci; \
+    else \
+        echo "==> npm install (no lockfile found)"; \
+        npm install; \
+    fi
 
 COPY . .
 
@@ -36,42 +73,95 @@ ENV VITE_SUPABASE_URL=$VITE_SUPABASE_URL \
     VITE_SUPABASE_PROJECT_ID=$VITE_SUPABASE_PROJECT_ID \
     NODE_ENV=production
 
-RUN npm run build
+# Build a self-hostable server bundle regardless of which platform the
+# repository targets.
+#
+# The env vars alone are not enough: an explicit `nitro: { preset: "netlify" }`
+# in vite.config.ts wins over NITRO_PRESET, and the build then emits a Netlify
+# Functions bundle (.netlify/) with no standalone server to run. So the preset
+# is rewritten in the copied source as well. This happens inside the build layer
+# only - the repository's own vite.config.ts is untouched, so deploying the same
+# source to Netlify still works.
+ENV NITRO_PRESET=node-server \
+    SERVER_PRESET=node-server
 
-# Vite writes to dist/ by default; normalise other common output directories so
-# the runtime stage always finds the bundle at /out.
-RUN if   [ -d dist ];  then cp -r dist /out; \
-    elif [ -d build ]; then cp -r build /out; \
-    else echo "Build produced neither dist/ nor build/" >&2; exit 1; fi
+RUN ["node", "-e", "const fs=require('fs');let hit=false;for(const f of ['vite.config.ts','vite.config.js','vite.config.mts','vite.config.mjs']){if(!fs.existsSync(f))continue;const s=fs.readFileSync(f,'utf8');const n=s.replace(/(preset\\s*:\\s*)(\"[^\"]*\"|'[^']*')/g,(m,p1)=>p1+'\"node-server\"');if(n!==s){fs.writeFileSync(f,n);hit=true;console.log('==> pinned Nitro preset to node-server in '+f);}}if(!hit)console.log('==> no explicit Nitro preset found; relying on NITRO_PRESET');"]
+
+RUN set -eu; \
+    if [ -f bun.lockb ] || [ -f bun.lock ]; then \
+        bun run build; \
+    elif [ -f pnpm-lock.yaml ]; then \
+        pnpm run build; \
+    elif [ -f yarn.lock ]; then \
+        yarn run build; \
+    else \
+        npm run build; \
+    fi
+
+# Nitro writes .output/; normalise it to /out so the runtime stage has one path.
+RUN set -eu; \
+    if [ -d .output ]; then \
+        cp -r .output /out; \
+    else \
+        echo "" >&2; \
+        echo "ERROR: the build produced no .output/ directory." >&2; \
+        echo "" >&2; \
+        echo "This image runs a Nitro server bundle, which the node-server preset" >&2; \
+        echo "writes to .output/. What the build actually produced:" >&2; \
+        ls -la >&2; \
+        echo "" >&2; \
+        exit 1; \
+    fi
+
+# The server entrypoint must exist, or the container would start, exit
+# immediately, and look like a crash-looping application rather than a build
+# that emitted the wrong shape.
+RUN if [ ! -f /out/server/index.mjs ]; then \
+        echo "" >&2; \
+        echo "ERROR: .output/server/index.mjs is missing." >&2; \
+        echo "The preset override did not take effect - the build targeted a" >&2; \
+        echo "platform runtime (Netlify/Cloudflare/Vercel) instead of node-server." >&2; \
+        echo "" >&2; \
+        find /out -maxdepth 2 >&2; \
+        echo "" >&2; \
+        exit 1; \
+    fi
 
 # ---------------------------------------------------------------------------
 # Stage 1b: reuse a build produced on the host
 # ---------------------------------------------------------------------------
 FROM alpine:3.20 AS builder-host
 WORKDIR /
-COPY dist /out
+COPY .output /out
 
 # Select the stage named by BUILD_MODE. Only the selected stage is built.
 FROM builder-${BUILD_MODE} AS builder
 
 # ---------------------------------------------------------------------------
 # Stage 2: runtime
+#
+# Node only - no bun, no source, no node_modules. Nitro bundles every runtime
+# dependency into .output/, so this image carries nothing else.
 # ---------------------------------------------------------------------------
-FROM nginx:1.27-alpine AS runtime
+FROM node:22-alpine AS runtime
 
 ARG APP_PORT=3000
-ENV APP_PORT=$APP_PORT
+ENV PORT=$APP_PORT \
+    HOST=0.0.0.0 \
+    NODE_ENV=production
 
-COPY nginx.conf /etc/nginx/conf.d/default.conf
-COPY --from=builder /out /usr/share/nginx/html
+WORKDIR /app
+COPY --from=builder /out ./.output
 
-# The port is templated so the installer can move the app off 3000 without
-# editing this file.
-RUN sed -i "s/__APP_PORT__/${APP_PORT}/g" /etc/nginx/conf.d/default.conf
+# Drop privileges. The node image ships an unprivileged `node` user, and the
+# server only ever reads from .output/.
+USER node
 
 EXPOSE 3000
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD wget -qO- "http://127.0.0.1:${APP_PORT}/healthz" >/dev/null 2>&1 || exit 1
+# Any HTTP answer below 500 means the server is up and routing; a login
+# redirect or a 404 on / is still a healthy server.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD node -e "require('http').get({host:'127.0.0.1',port:process.env.PORT,path:'/'},r=>process.exit(r.statusCode<500?0:1)).on('error',()=>process.exit(1))"
 
-CMD ["nginx", "-g", "daemon off;"]
+CMD ["node", ".output/server/index.mjs"]

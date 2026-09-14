@@ -60,6 +60,19 @@ deploy_key_prepare() {
         return 1
     fi
 
+    # A key that travelled through Windows carries CRLF line endings, and
+    # OpenSSH rejects it with "error in libcrypto" - which reads like a corrupt
+    # or wrong key rather than a line-ending problem, and sends operators off
+    # regenerating perfectly good deploy keys. Normalise instead.
+    if grep -qU $'\r' "$key" 2>/dev/null; then
+        log_info "Deployment key had Windows line endings; normalising to LF."
+        local tmp
+        tmp="$(mktemp)"
+        tr -d '\r' <"$key" >"$tmp" && cat "$tmp" >"$key"
+        rm -f "$tmp"
+        chmod 600 "$key"
+    fi
+
     DEPLOY_KEY="$key"
     log_ok "Deployment key ready (${key})"
     return 0
@@ -77,20 +90,46 @@ _repo_ssh_host() {
 
 # Pin the remote's host key so clones never block on an interactive prompt and
 # are not silently vulnerable to a substituted host.
+# Keep only genuine host-key entries: "<host> <keytype> <base64>".
+#
+# Filtering on "not a comment" is not enough: an ssh-keyscan that cannot
+# negotiate with the server prints diagnostics that are neither comments nor
+# keys, and it can still exit 0. Writing those into known_hosts produces a file
+# that parses but holds no usable key, which surfaces much later as an
+# unexplained "Host key verification failed".
+_host_key_lines() {
+    local host="$1"
+    grep -E '^[^#[:space:]]+[[:space:]]+(ssh-ed25519|ssh-rsa|ssh-dss|ecdsa-sha2-[^[:space:]]+|sk-ssh-[^[:space:]]+|sk-ecdsa-[^[:space:]]+)[[:space:]]+[A-Za-z0-9+/=]+' \
+        | grep -F "$host" || true
+}
+
 deploy_key_known_hosts() {
-    local host
+    local host scanned
     host="$(_repo_ssh_host "$APP_REPOSITORY")" || return 0
     SO_KNOWN_HOSTS="${CONFIG_DIR}/known_hosts"
     mkdir -p "$CONFIG_DIR"
-    if [[ ! -s "$SO_KNOWN_HOSTS" ]] || ! grep -q "$host" "$SO_KNOWN_HOSTS" 2>/dev/null; then
-        log_info "Recording the host key for ${host}..."
-        ssh-keyscan -T 10 "$host" >>"$SO_KNOWN_HOSTS" 2>/dev/null || {
-            log_warn "ssh-keyscan failed for ${host}; falling back to accept-new."
-            SO_KNOWN_HOSTS=""
-            return 0
-        }
+
+    # Only trust an existing file if it holds a real key line for this host.
+    if [[ -s "$SO_KNOWN_HOSTS" ]] && \
+       [[ -n "$(_host_key_lines "$host" <"$SO_KNOWN_HOSTS")" ]]; then
+        chmod 644 "$SO_KNOWN_HOSTS" 2>/dev/null || true
+        return 0
     fi
+
+    log_info "Recording the host key for ${host}..."
+    scanned="$(ssh-keyscan -T 10 "$host" 2>/dev/null | _host_key_lines "$host")"
+
+    if [[ -z "$scanned" ]]; then
+        # Better to let SSH learn the key on first contact than to write a file
+        # that makes strict checking fail against every host.
+        log_warn "ssh-keyscan could not retrieve a host key for ${host}; falling back to accept-new."
+        SO_KNOWN_HOSTS=""
+        return 0
+    fi
+
+    printf '%s\n' "$scanned" >"$SO_KNOWN_HOSTS"
     chmod 644 "$SO_KNOWN_HOSTS" 2>/dev/null || true
+    log_ok "Pinned $(printf '%s\n' "$scanned" | wc -l | tr -d ' ') host key(s) for ${host}"
     return 0
 }
 

@@ -18,7 +18,14 @@ require_linux() {
     local kernel
     kernel="$(uname -s)"
     if [[ "$kernel" != "Linux" ]]; then
-        log_error "Sentinel Ops Installer is Linux-only (detected: ${kernel})."
+        log_error "This is the Linux build of the Sentinel Ops installer (detected: ${kernel})."
+        case "$kernel" in
+            MINGW*|MSYS*|CYGWIN*)
+                log_error "On Windows, run the PowerShell build instead:"
+                log_error "  .\\windows\\bin\\sentinel-ops.ps1 install"
+                log_error "See docs/WINDOWS.md."
+                ;;
+        esac
         exit 1
     fi
     log_ok "Linux detected"

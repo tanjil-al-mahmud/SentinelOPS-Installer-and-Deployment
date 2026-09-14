@@ -180,7 +180,12 @@ cmd_logs() {
             ;;
         installer)
             local latest
-            latest="$(find "$LOG_DIR" -name '*.log' -type f 2>/dev/null | LC_ALL=C sort | tail -n1)"
+            # By modification time, not by name: the filenames are prefixed with
+            # the operation (install-, update-app-, rollback-), so sorting them
+            # alphabetically returns whichever prefix sorts last rather than the
+            # log that was actually written most recently.
+            latest="$(find "$LOG_DIR" -name '*.log' -type f -printf '%T@ %p\n' 2>/dev/null \
+                        | sort -n | tail -n1 | cut -d' ' -f2-)"
             [[ -n "$latest" ]] || die "No installer logs yet."
             printf '%s\n\n' "$latest"
             tail -n "$lines" "$latest"
