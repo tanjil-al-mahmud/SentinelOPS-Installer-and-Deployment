@@ -153,19 +153,55 @@ frontend_bind_address() {
 
 # Start a container from an image. frontend_run_container <name> <image> <host-port>
 frontend_run_container() {
-    local name="$1" image="$2" host_port="$3" network bind
+    local name="$1" image="$2" host_port="$3" network bind attached="false"
     network="$(supabase_network_name)"
     bind="$(frontend_bind_address)"
 
     docker rm -f "$name" >/dev/null 2>&1 || true
 
+    # Attaching to the Supabase network lets a dockerised reverse proxy route to
+    # this container by name instead of going back out through the host, and is
+    # also how the Nitro server reaches the Supabase gateway (see below).
+    if docker network inspect "$network" >/dev/null 2>&1; then
+        attached="true"
+    else
+        log_warn "Supabase network '${network}' not found; starting on the default bridge."
+    fi
+
+    # The image ships with no credentials in it on purpose, so everything the
+    # server needs has to arrive here. This is not just the browser's
+    # configuration: the app is a TanStack Start/Nitro server, and its
+    # server-side code reads SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY from
+    # process.env (src/integrations/supabase/client.server.ts). Without them
+    # every server function and /api/health fail with "Missing Supabase
+    # environment variable(s)" while the container still serves HTML, so the
+    # deployment looks up but cannot talk to the database.
+    local pub_key svc_key server_url
+    if ! pub_key="$(supabase_publishable_key)"; then
+        log_error "Could not read the Supabase publishable (anon) key from ${SUPABASE_DIR}/.env"
+        return 1
+    fi
+    if ! svc_key="$(supabase_service_role_key)"; then
+        log_error "Could not read the Supabase service-role key from ${SUPABASE_DIR}/.env"
+        return 1
+    fi
+
+    # SUPABASE_URL is the endpoint the *server* dials, which is not the same as
+    # the one the browser uses. SUPABASE_PUBLIC_URL is routinely
+    # http://localhost:8000, and inside this container localhost is the
+    # container itself, not the gateway. Address the gateway by its Compose
+    # service name while we are on the Supabase network; only fall back to the
+    # public URL when we are not, where it is the best guess available.
+    if [[ "$attached" == "true" ]]; then
+        server_url="http://api-gw:$(supabase_kong_port)"
+    else
+        server_url="$SUPABASE_PUBLIC_URL"
+    fi
+
     # Runtime environment is passed explicitly rather than with --env-file:
     # Docker does not strip quotes from an env file, so the quoted values in
     # app/.env (which is written in the format the application's own tooling
     # expects) would arrive with literal " characters around them.
-    #
-    # The client-side Supabase settings are not needed here in any case - Vite
-    # inlined them into the bundle at build time.
     local args=(
         run -d
         --name "$name"
@@ -177,18 +213,27 @@ frontend_run_container() {
         # reaches nothing.
         -e "PORT=${APP_PORT}"
         -e "HOST=0.0.0.0"
+        -e "SUPABASE_URL=${server_url}"
+        # The browser gets this one, via the /runtime-config.js server route.
+        -e "SUPABASE_PUBLIC_URL=${SUPABASE_PUBLIC_URL}"
+        # Both keys are passed by name, not as NAME=value: run_logged writes the
+        # argv it is given into the installer log, and the service-role key is a
+        # full-access credential that must not be persisted there.
+        -e SUPABASE_PUBLISHABLE_KEY
+        -e SUPABASE_SERVICE_ROLE_KEY
         -p "${bind}:${host_port}:${APP_PORT}"
     )
-    # Attaching to the Supabase network lets a dockerised reverse proxy route to
-    # this container by name instead of going back out through the host.
-    if docker network inspect "$network" >/dev/null 2>&1; then
+    if [[ "$attached" == "true" ]]; then
         args+=(--network "$network")
-    else
-        log_warn "Supabase network '${network}' not found; starting on the default bridge."
     fi
     args+=("$image")
 
-    run_logged "start ${name}" docker "${args[@]}"
+    local rc=0
+    export SUPABASE_PUBLISHABLE_KEY="$pub_key"
+    export SUPABASE_SERVICE_ROLE_KEY="$svc_key"
+    run_logged "start ${name}" docker "${args[@]}" || rc=$?
+    unset SUPABASE_PUBLISHABLE_KEY SUPABASE_SERVICE_ROLE_KEY
+    return "$rc"
 }
 
 frontend_check_http() {
