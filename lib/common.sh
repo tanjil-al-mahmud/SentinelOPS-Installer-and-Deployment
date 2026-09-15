@@ -37,7 +37,11 @@ _log_to_file() {
     local dir
     dir="$(dirname "$SO_LOG_FILE")"
     [[ -d "$dir" ]] || mkdir -p "$dir" 2>/dev/null || return 0
-    printf '%s %s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$*" >>"$SO_LOG_FILE" 2>/dev/null || true
+    # 2>/dev/null comes first on purpose: redirections are applied left to
+    # right, so with the append first its own "Permission denied" would be
+    # written to the terminal before stderr had been silenced. Logging is
+    # best-effort - a log that cannot be written must stay quiet about it.
+    printf '%s %s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$*" 2>/dev/null >>"$SO_LOG_FILE" || true
 }
 
 log_info()  { printf '%s[INFO]%s  %s\n' "$C_BLUE"   "$C_RESET" "$*";     _log_to_file "[INFO]  $*"; }
@@ -112,7 +116,7 @@ run_logged() {
     log_debug "exec: $*"
     out="$("$@" 2>&1)" || rc=$?
     if [[ -n "$SO_LOG_FILE" ]]; then
-        printf '%s\n' "$out" >>"$SO_LOG_FILE" 2>/dev/null || true
+        printf '%s\n' "$out" 2>/dev/null >>"$SO_LOG_FILE" || true
     fi
     if (( rc != 0 )); then
         log_error "$desc failed (exit $rc)"

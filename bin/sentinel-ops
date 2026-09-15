@@ -107,6 +107,10 @@ main() {
     [[ -d "$LOG_DIR" ]] && SO_LOG_FILE="${LOG_DIR}/sentinel-ops-$(date +%Y-%m-%d).log"
     config_load 2>/dev/null || true
 
+    # A copy of this tool that has fallen behind its source looks exactly like
+    # a tool missing a feature, so check before the command reports anything.
+    warn_if_stale
+
     local cmd="${args[0]:-menu}"
     local rest=("${args[@]:1}")
 
