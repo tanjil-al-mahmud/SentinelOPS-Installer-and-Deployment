@@ -389,3 +389,37 @@ guards. Two implementations of the same logic means one of them is quietly wrong
 Developing on Windows is unaffected: the scripts are LF-enforced by
 `.gitattributes` and `install.sh` rejects a CRLF-contaminated checkout, and WSL
 runs the installer as-is — see §18 for the one Docker gotcha that causes.
+
+---
+
+## 20. `nuke` confirms with a typed word and distinguishes "no" from "cannot ask"
+
+The installer needed a teardown counterpart so one server can be used to test
+installations repeatedly. Three choices in it are deliberate.
+
+**The confirmation is the typed word `nuke`, not `y/N`.** Everywhere else a
+`confirm` prompt is right, because the worst case is a re-run. Here the worst
+case is a dropped database, and a y/N prompt sits one stray keystroke away from
+that.
+
+**A missing terminal is an error, not a default.** `confirm` deliberately falls
+through to its default when there is no TTY, which is what makes the installer
+usable from CI. Applying that rule here would mean `sentinel-ops nuke` in a
+pipeline either silently destroying a database or silently doing nothing — and
+the second is worse, because `nuke && ./install.sh` would then install on top
+of a stack that is still running and report success. So `nuke` exits **2** when
+it cannot ask, **1** is never returned to the caller, and a genuine typed
+cancellation exits 0.
+
+**Docker is torn down before the filesystem.** `docker compose down -v` reads
+`supabase/docker-compose.yml` and `supabase/.env` to know what it owns.
+Removing the directory first would leave every container and volume orphaned
+with nothing left to identify them by — which is precisely the mess this
+command exists to prevent. A label-based sweep of the Compose project runs
+afterwards anyway, for the case where those files were already gone.
+
+Supabase's images are kept. Re-pulling the stack is several GB and many minutes
+per cycle, a cached image cannot make an installation stale (the compose file
+pins what it wants), and the point of the command is a fast loop. `tests/test_nuke.sh`
+asserts the path guard and the keep-list, since those are what stand between a
+mistyped `--dir` and an `rm -rf` somewhere it does not belong.

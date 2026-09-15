@@ -124,8 +124,36 @@ upstreams it prints — see [docs/REVERSE-PROXY.md](docs/REVERSE-PROXY.md).
 | `sentinel-ops restore [backup]` | Restore a backup (latest if omitted) |
 | `sentinel-ops rollback` | Roll the application back to the previous image |
 | `sentinel-ops logs <target>` | `app`, `supabase`, `logflare`, `installer` |
+| `sentinel-ops nuke` | **Destroy this installation** so a fresh one can be tested |
 
 Global options: `--dir <path>`, `--yes`, `--show`, `--force`, `--debug`.
+
+### Testing a fresh install on the same machine
+
+`sentinel-ops nuke` is the counterpart to `install`: it removes the containers,
+**all volumes including the database**, the application images and the
+installation directory, leaving the host ready to install from scratch.
+
+```bash
+sudo sentinel-ops nuke                    # everything
+sudo sentinel-ops nuke --keep-config      # keep installer.env and the deploy key
+sudo sentinel-ops nuke --keep-backups     # keep the database dumps
+sudo sentinel-ops nuke --keep-all         # keep both
+```
+
+It asks you to type `nuke` to confirm. `--yes` skips that prompt for scripted
+test loops; without a terminal and without `--yes` the command **refuses and
+exits 2** rather than assuming an answer, so `nuke && install.sh` can never
+install over a stack that is still running.
+
+Supabase's pulled images are deliberately left on the host — re-pulling them is
+several GB per cycle, and a cached image cannot make an install stale. `docker`
+itself is a prerequisite, not part of the deployment, and is never touched.
+
+`--keep-config` is the one to use for repeat runs: it preserves
+`config/installer.env` and `config/deploy_key`, so the reinstall needs no
+prompts and no re-copied key. Phase markers in `.state/` are always removed, so
+every phase genuinely re-runs.
 
 ---
 

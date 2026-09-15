@@ -16,7 +16,8 @@ _menu_installed() {
     printf '  5. Credentials\n'
     printf '  6. Backup database\n'
     printf '  7. Rollback application\n'
-    printf '  8. Exit\n\n'
+    printf '  8. Destroy this installation (nuke)\n'
+    printf '  9. Exit\n\n'
     printf 'Select: '
 }
 
@@ -52,7 +53,8 @@ cmd_menu() {
                 5) cmd_credentials      || true ;;
                 6) cmd_backup create    || true ;;
                 7) cmd_rollback         || true ;;
-                8|q|quit|exit) return 0 ;;
+                8) cmd_nuke             || true ;;
+                9|q|quit|exit) return 0 ;;
                 *) log_warn "Invalid selection: ${choice}" ;;
             esac
         else

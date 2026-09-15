@@ -159,12 +159,64 @@ Edit `/opt/sentinel-ops/config/installer.env`, then apply:
 Changing a URL requires a **rebuild**, not a restart: Vite inlines
 `VITE_SUPABASE_URL` into the JavaScript bundle.
 
-## Uninstalling
+## Stopping without destroying anything
 
 ```bash
 cd /opt/sentinel-ops/supabase && docker compose down      # keeps volumes
 docker rm -f sentinel-ops-frontend
 ```
 
-Add `-v` to `docker compose down` only if you intend to destroy the database.
-Back up first.
+The database survives; `sentinel-ops install` brings it all back.
+
+## Uninstalling, and testing a fresh install
+
+```bash
+sudo sentinel-ops nuke
+```
+
+This is the counterpart to `install`. In order, it:
+
+1. Removes the frontend container and its staging container
+2. Runs `docker compose down -v --remove-orphans` — **this destroys the
+   database and all uploaded objects**
+3. Sweeps up anything still labelled with the Compose project, in case the
+   compose file was already missing or unreadable
+4. Removes the `sentinel-ops:*` images
+5. Deletes `/opt/sentinel-ops` and the `/usr/local/bin/sentinel-ops` symlink
+
+Docker is torn down **before** the filesystem on purpose: `compose down` needs
+`supabase/docker-compose.yml` and `supabase/.env` to know what to remove, so
+deleting the directory first would orphan every container and volume.
+
+| Flag | Effect |
+|---|---|
+| `--keep-backups` | Keeps `backups/` |
+| `--keep-config` | Keeps `config/` — `installer.env` and the deploy key |
+| `--keep-all` | Both |
+| `--yes` | Skips the typed confirmation (for scripted loops) |
+
+Confirmation is the typed word `nuke`, not a y/N prompt. Without a terminal and
+without `--yes` it refuses and exits **2**, so a script that runs
+`sentinel-ops nuke && ./install.sh` cannot mistake a missing terminal for a
+completed teardown.
+
+**Not removed:** Supabase's pulled images (re-pulling is several GB per cycle
+and a cached image cannot make an install stale) and Docker itself (a
+prerequisite, not part of the deployment).
+
+### The reinstall loop
+
+```bash
+sudo sentinel-ops nuke --keep-config --yes
+sudo ./install.sh --yes
+sentinel-ops status
+```
+
+`--keep-config` preserves `installer.env` and `deploy_key`, so the reinstall
+needs no prompts and no re-copied key. Phase markers under `.state/` are always
+removed, so every phase genuinely re-runs rather than reporting *already
+completed*.
+
+If Docker is not running when you nuke, the files are removed but the
+containers and volumes survive — the command says so. Start Docker and run it
+again to clear them.
