@@ -28,7 +28,7 @@ rm -f /tmp/so-syntax-err
 hr "Line endings"
 # A CRLF in any of these files breaks the shebang on Linux.
 crlf=0
-for f in "${SCRIPTS[@]}" assets/app/Dockerfile assets/app/nginx.conf; do
+for f in "${SCRIPTS[@]}" assets/app/Dockerfile assets/app/dockerignore; do
     if grep -qU $'\r' "$f" 2>/dev/null; then
         printf 'FAIL  %s contains CRLF\n' "$f"; crlf=1; fail=1
     fi

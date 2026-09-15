@@ -4,11 +4,8 @@ An installation and update system for the Sentinel Ops stack: self-hosted
 **Supabase**, **Logflare**, and the **Sentinel Ops React frontend**, all running
 under Docker.
 
-Two builds, same commands and same deployment: a shell installer for Linux
-servers, and a native PowerShell port for Windows — see
-[docs/WINDOWS.md](docs/WINDOWS.md).
-
-A clean supported server plus a deployment key becomes a working Sentinel Ops
+A shell installer for Linux servers. A clean supported server plus a deployment
+key becomes a working Sentinel Ops
 installation with one command, and every subsequent release ships with
 `sentinel-ops update app`.
 
@@ -138,17 +135,9 @@ Global options: `--dir <path>`, `--yes`, `--show`, `--force`, `--debug`.
 |---|---|
 | Debian | Debian, Ubuntu (and derivatives via `ID_LIKE`) |
 | RHEL | RHEL, CentOS, Fedora, Rocky, AlmaLinux |
-| Windows | Windows 10 1809+, Windows 11, Windows Server 2019+ |
 
-The shell installer refuses to run on a non-Linux kernel and points you at the
-Windows build; the Windows build does the reverse. Prerequisites are verified
-and installed when missing — `curl`, `git`, `openssl`, `jq`, `ssh` on Linux;
-just `git` and `ssh` on Windows, where HTTP, crypto and JSON come from .NET.
-
-The Windows build needs Docker Desktop in **Linux-container mode** with the WSL2
-backend, and additionally checks for that. It does not require Administrator:
-it tests whether the install directory is writable instead, which a standard
-user normally is for `C:\SentinelOps`.
+The installer refuses to run on a non-Linux kernel. Prerequisites — `curl`,
+`git`, `openssl`, `jq`, `ssh` — are verified and installed when missing.
 
 Docker is checked at three levels, because `docker --version` succeeding proves
 nothing: the **binary** exists, the **daemon** answers, and a **container
@@ -171,7 +160,6 @@ actually runs**.
 │   ├── .env                 ← secrets and state; never regenerated
 │   ├── docker-compose.yml
 │   └── volumes/             database data, storage, edge functions
-├── logflare/                standalone deployment (fallback only)
 ├── app/                     the Sentinel Ops checkout
 │   ├── .env                 generated from Supabase config
 │   └── supabase/{migrations,functions}
@@ -285,10 +273,11 @@ destructive than leaving it — and names the relevant backup instead.
 ## Analytics (Logflare)
 
 Deployed via Supabase's own optional overlay (`run.sh config add logs`), which
-adds the **analytics** and **vector** services. Two backends are offered at
-install time: `postgres` (default, no extra services) and `bigquery` (upstream's
-production recommendation, needs a Google Cloud project and a service-account
-key).
+adds the **analytics** and **vector** services on the Postgres backend. That
+overlay is the only path: if the Supabase release in use does not ship it,
+analytics is **skipped with a warning** and the install continues. There is no
+parallel compose stack to fall back to, because a log aggregator is not worth a
+second deployment mechanism to keep in sync.
 
 Tokens and the base64 `LOGFLARE_DB_ENCRYPTION_KEY` are generated once and
 re-applied after every Supabase update. Port 4000 is never published — Logflare's
@@ -347,16 +336,15 @@ skipped.
 Runs shell syntax checks, a CRLF guard, shellcheck (when installed) and the unit
 tests for the helpers that the deployment logic depends on.
 
-> **Windows note:** these scripts must ship with LF endings. `.gitattributes`
-> enforces this; `install.sh` also refuses to run a CRLF-contaminated checkout
-> rather than failing with an unhelpful `bad interpreter` error.
+> **Line endings:** these scripts must ship with LF, which matters if you edit
+> them from a Windows checkout. `.gitattributes` enforces it; `install.sh` also
+> refuses to run a CRLF-contaminated checkout rather than failing with an
+> unhelpful `bad interpreter` error.
 
 ---
 
 ## Further reading
 
-- [docs/WINDOWS.md](docs/WINDOWS.md) — the Windows build, and the five places it
-  deliberately differs from the shell one
 - [docs/OPERATIONS.md](docs/OPERATIONS.md) — day-two runbook and troubleshooting
 - [docs/REVERSE-PROXY.md](docs/REVERSE-PROXY.md) — upstreams and example proxy configs
 - [docs/LOGFLARE.md](docs/LOGFLARE.md) — analytics setup, backends and variables

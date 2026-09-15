@@ -121,10 +121,21 @@ mistake.
 Per the [self-hosting analytics
 reference](https://supabase.com/docs/reference/self-hosting-analytics/introduction),
 `run.sh config add logs` layers `docker-compose.logs.yml` onto the base stack and
-starts two services: **analytics** (Logflare) and **vector** (log collection). The
-installer uses that path when `run.sh` exists, falls back to setting
-`COMPOSE_FILE` itself, then to a bundled `analytics` service, and only deploys its
-own compose file when upstream ships none of the above.
+starts two services: **analytics** (Logflare) and **vector** (log collection).
+That overlay is the **only** path the installer implements.
+
+An earlier version had four: the `run.sh` route, setting `COMPOSE_FILE` by hand,
+starting a bundled `analytics` service, and finally a standalone compose file of
+our own. Every one of those after the first was a guess about a Supabase layout
+that might never ship, each with its own env file, network attachment, container
+lookup and health probe to keep working. That is a lot of machinery defending a
+**log aggregator** — something whose absence does not stop the application
+serving a single request.
+
+So: if `supabase/run.sh` exists, analytics is deployed through it. If it does
+not, analytics is skipped with a warning and the install continues. The phase is
+non-fatal and leaves its marker unset, so re-running the installer retries it
+once upstream does ship the overlay.
 
 Three things this surfaced that the original plan did not account for:
 
@@ -138,10 +149,13 @@ Three things this surfaced that the original plan did not account for:
 - **The dashboard has no authentication.** The installer warns about this after
   every deployment, and the reverse-proxy guide says not to expose it.
 
-A backend choice was also added, because upstream is explicit that the Postgres
-backend "is not optimized for high-volume inserts or heavy querying" and
-recommends BigQuery for production. `postgres` remains the default since it needs
-nothing provisioned.
+The Postgres backend the overlay wires up by default is the one used. Upstream is
+explicit that it "is not optimized for high-volume inserts or heavy querying" and
+recommends BigQuery for production — but BigQuery needs a Google Cloud project
+with billing enabled and a service-account key, which is an operator decision,
+not an installer prompt. Its variables are read by the overlay rather than by
+this installer, so an operator who wants it can set them in `supabase/.env`
+without fighting anything here.
 
 ---
 
@@ -243,16 +257,13 @@ The API and Studio probes accept `403` for the same reason.
 
 ## 13. `known_hosts` is validated, not assumed
 
-`ssh-keyscan` can fail while exiting successfully — the build in
-`C:\Windows\System32\OpenSSH` cannot negotiate with GitHub and returns no keys
-at all. Appending its output blindly produces a `known_hosts` that parses but
-holds no usable key, which surfaces much later as `Host key verification failed`
-and looks like a deploy-key problem.
+`ssh-keyscan` can fail while exiting successfully — some builds cannot negotiate
+with GitHub and return no keys at all. Appending its output blindly produces a
+`known_hosts` that parses but holds no usable key, which surfaces much later as
+`Host key verification failed` and looks like a deploy-key problem.
 
-Both builds now keep only lines shaped `<host> <keytype> <base64>`, and fall
-back to `StrictHostKeyChecking=accept-new` when no key could be retrieved. The
-Windows build additionally tries Git for Windows' bundled `ssh-keyscan` when the
-one on `PATH` yields nothing.
+The installer now keeps only lines shaped `<host> <keytype> <base64>`, and falls
+back to `StrictHostKeyChecking=accept-new` when no key could be retrieved.
 
 ---
 
@@ -338,9 +349,7 @@ git@github.com: Permission denied (publickey).
 
 That message reads like a corrupt or unregistered key, and sends operators off
 regenerating and re-registering a deploy key that was fine all along. The
-installer strips the CRs after validating the key and before using it. Both
-builds do this; it was found by running the Linux installer with a key that had
-worked on Windows, where the Windows port already normalised it.
+installer strips the CRs after validating the key and before using it.
 
 ---
 
@@ -358,3 +367,25 @@ several steps later on the daemon check with nothing pointing at the real cause.
 The check now requires `docker --version` to actually succeed, and when the
 binary turns out to be a Windows executable the installer says so and offers to
 install Docker natively instead.
+
+---
+
+## 19. The deployment target is Linux only
+
+A native PowerShell port of the whole installer used to live under `windows/` —
+nearly 5,000 lines reimplementing every module, plus a `docs/WINDOWS.md`
+cataloguing the places the two builds had to diverge: a generated
+`docker-compose.windows.yml` to move bind mounts off the Windows/Linux boundary,
+its own Compose file-list handling because upstream's `run.sh` cannot run there,
+its own prerequisite and privilege checks, its own crypto via .NET because there
+is no `openssl`, and its own `ssh-keyscan` fallback.
+
+It has been removed. Sentinel Ops is deployed to Linux servers; the Windows port
+existed for local experimentation, and the price was a second implementation of
+every deployment decision that had to be kept in step with the first — including
+the analytics overlay and the secret generation that `tests/test_secrets.sh`
+guards. Two implementations of the same logic means one of them is quietly wrong.
+
+Developing on Windows is unaffected: the scripts are LF-enforced by
+`.gitattributes` and `install.sh` rejects a CRLF-contaminated checkout, and WSL
+runs the installer as-is — see §18 for the one Docker gotcha that causes.

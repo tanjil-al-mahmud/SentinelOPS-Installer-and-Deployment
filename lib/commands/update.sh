@@ -120,8 +120,7 @@ cmd_update_supabase() {
     supabase_apply_config || die "Could not re-apply the Supabase configuration."
     if [[ "$ENABLE_LOGFLARE" == "true" ]]; then
         # An upstream .env.example change must not revert the analytics
-        # settings, and the logs overlay must stay enabled in COMPOSE_FILE.
-        logflare_detect_mode >/dev/null
+        # settings.
         logflare_configure_supabase || log_warn "Could not re-apply the analytics configuration."
     fi
     phase_end

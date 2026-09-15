@@ -11,7 +11,6 @@ CONFIG_DIR=""
 CONFIG_FILE=""
 SUPABASE_DIR=""
 APP_DIR=""
-LOGFLARE_DIR=""
 BACKUP_DIR=""
 STATE_DIR=""
 STATE_FILE=""
@@ -38,10 +37,6 @@ APP_BIND="127.0.0.1"
 APP_IMAGE_NAME="sentinel-ops"
 APP_CONTAINER_NAME="sentinel-ops-frontend"
 ENABLE_LOGFLARE="true"
-# postgres | bigquery - see docs/LOGFLARE.md
-LOGFLARE_BACKEND="postgres"
-GOOGLE_PROJECT_ID=""
-GOOGLE_PROJECT_NUMBER=""
 
 # Establish every path from the installation root.
 config_set_paths() {
@@ -50,7 +45,6 @@ config_set_paths() {
     CONFIG_FILE="${CONFIG_DIR}/installer.env"
     SUPABASE_DIR="${INSTALL_DIR}/supabase"
     APP_DIR="${INSTALL_DIR}/app"
-    LOGFLARE_DIR="${INSTALL_DIR}/logflare"
     BACKUP_DIR="${INSTALL_DIR}/backups"
     STATE_DIR="${INSTALL_DIR}/.state"
     STATE_FILE="${STATE_DIR}/state.env"
@@ -61,7 +55,7 @@ config_set_paths() {
 
 config_make_dirs() {
     mkdir -p "$CONFIG_DIR" "$BACKUP_DIR" "$STATE_DIR" "$PHASE_DIR" \
-             "$LOG_DIR" "$RUNTIME_DIR" "$LOGFLARE_DIR"
+             "$LOG_DIR" "$RUNTIME_DIR"
     # Config and state hold URLs and deployment metadata; keep them private.
     chmod 750 "$CONFIG_DIR" "$STATE_DIR" "$BACKUP_DIR" 2>/dev/null || true
 }
@@ -78,8 +72,7 @@ config_load() {
     local key val
     for key in APP_REPOSITORY APP_BRANCH DEPLOY_KEY SUPABASE_PUBLIC_URL \
                API_EXTERNAL_URL SITE_URL APP_PORT APP_BIND APP_IMAGE_NAME \
-               APP_CONTAINER_NAME ENABLE_LOGFLARE LOGFLARE_BACKEND \
-               GOOGLE_PROJECT_ID GOOGLE_PROJECT_NUMBER; do
+               APP_CONTAINER_NAME ENABLE_LOGFLARE; do
         val="$(env_get "$CONFIG_FILE" "$key" || true)"
         [[ -n "$val" ]] && printf -v "$key" '%s' "$val"
     done
@@ -97,7 +90,6 @@ config_save() {
         printf 'INSTALL_DIR=%s\n'           "$INSTALL_DIR"
         printf 'SUPABASE_DIR=%s\n'          "$SUPABASE_DIR"
         printf 'APP_DIR=%s\n'               "$APP_DIR"
-        printf 'LOGFLARE_DIR=%s\n'          "$LOGFLARE_DIR"
         printf 'BACKUP_DIR=%s\n\n'          "$BACKUP_DIR"
         printf '# Application repository\n'
         printf 'APP_REPOSITORY=%s\n'        "$APP_REPOSITORY"
@@ -115,9 +107,6 @@ config_save() {
         printf 'APP_CONTAINER_NAME=%s\n\n'  "$APP_CONTAINER_NAME"
         printf '# Analytics (Logflare) - see docs/LOGFLARE.md\n'
         printf 'ENABLE_LOGFLARE=%s\n'       "$ENABLE_LOGFLARE"
-        printf 'LOGFLARE_BACKEND=%s\n'      "$LOGFLARE_BACKEND"
-        printf 'GOOGLE_PROJECT_ID=%s\n'     "$GOOGLE_PROJECT_ID"
-        printf 'GOOGLE_PROJECT_NUMBER=%s\n' "$GOOGLE_PROJECT_NUMBER"
     } >"$tmp"
     cat "$tmp" >"$CONFIG_FILE"
     rm -f "$tmp"

@@ -157,7 +157,11 @@ cmd_install() {
 
     phase_once supabase_files  "Supabase deployment files"   _install_supabase_files  || die "Supabase setup failed."
     phase_once supabase_start  "Starting Supabase"           _install_supabase_start  || die "Supabase did not become healthy."
-    phase_once logflare        "Logflare"                    _install_logflare        || die "Logflare deployment failed."
+    # Analytics is a log aggregator, not a dependency of the application: a
+    # failure here leaves the phase unmarked (so a re-run retries it) but must
+    # not abort an otherwise good installation.
+    phase_once logflare        "Analytics (Logflare)"        _install_logflare        || \
+        log_warn "Analytics was not deployed; the rest of the stack is unaffected."
     phase_once repository      "Sentinel Ops repository"     _install_repository      || die "Repository checkout failed."
 
     # The remaining phases are cheap and depend on current config, so they run

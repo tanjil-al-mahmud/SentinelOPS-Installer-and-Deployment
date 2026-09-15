@@ -172,11 +172,7 @@ cmd_logs() {
             supabase_compose logs --tail "$lines" -f
             ;;
         logflare|analytics)
-            if [[ "$(state_get LOGFLARE_MODE bundled)" == "standalone" ]]; then
-                logflare_compose logs --tail "$lines" -f
-            else
-                supabase_compose logs --tail "$lines" -f analytics
-            fi
+            supabase_compose logs --tail "$lines" -f analytics
             ;;
         installer)
             local latest
@@ -192,7 +188,7 @@ cmd_logs() {
             ;;
         *)
             log_error "Unknown log target: ${target}"
-            printf 'Valid: app, supabase, logflare, proxy, installer\n'
+            printf 'Valid: app, supabase, logflare, installer\n'
             return 2
             ;;
     esac

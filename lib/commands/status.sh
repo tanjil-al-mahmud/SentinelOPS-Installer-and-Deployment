@@ -67,7 +67,6 @@ _status_logflare() {
         status_line "Status" "warn" "Disabled"
         return 0
     fi
-    status_line "Mode" "" "$(state_get LOGFLARE_MODE unknown)"
     if logflare_running; then
         if logflare_check; then
             status_line "Status" "ok" "Running"

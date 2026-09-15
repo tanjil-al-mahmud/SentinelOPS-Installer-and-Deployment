@@ -154,7 +154,7 @@ Edit `/opt/sentinel-ops/config/installer.env`, then apply:
 | `SUPABASE_PUBLIC_URL`, `SITE_URL`, `API_EXTERNAL_URL` | `sentinel-ops update app` (rebuilds the bundle — these are baked in at build time) |
 | `APP_BRANCH`, `APP_REPOSITORY` | `sentinel-ops update app` |
 | `APP_BIND`, `APP_PORT` | `sentinel-ops update app` |
-| `ENABLE_LOGFLARE`, `LOGFLARE_BACKEND` | `sentinel-ops install` (re-runs the analytics phase) |
+| `ENABLE_LOGFLARE` | `sentinel-ops install` (re-runs the analytics phase) |
 
 Changing a URL requires a **rebuild**, not a restart: Vite inlines
 `VITE_SUPABASE_URL` into the JavaScript bundle.

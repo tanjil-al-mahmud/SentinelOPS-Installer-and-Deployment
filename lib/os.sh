@@ -18,14 +18,8 @@ require_linux() {
     local kernel
     kernel="$(uname -s)"
     if [[ "$kernel" != "Linux" ]]; then
-        log_error "This is the Linux build of the Sentinel Ops installer (detected: ${kernel})."
-        case "$kernel" in
-            MINGW*|MSYS*|CYGWIN*)
-                log_error "On Windows, run the PowerShell build instead:"
-                log_error "  .\\windows\\bin\\sentinel-ops.ps1 install"
-                log_error "See docs/WINDOWS.md."
-                ;;
-        esac
+        log_error "The Sentinel Ops installer targets Linux servers (detected: ${kernel})."
+        log_error "Run it on a supported distribution - see the README."
         exit 1
     fi
     log_ok "Linux detected"

@@ -65,9 +65,9 @@ supabase_installed() {
     [[ -f "${SUPABASE_DIR}/docker-compose.yml" && -f "${SUPABASE_DIR}/.env" ]]
 }
 
-# The Docker network the Supabase stack runs on. Other components (the
-# frontend, standalone Logflare) attach to it so they can reach Supabase
-# by service name instead of going back out through the host.
+# The Docker network the Supabase stack runs on. The frontend attaches to it so
+# it can reach Supabase by service name instead of going back out through the
+# host.
 supabase_network_name() {
     local cid net
     cid="$(supabase_container_id "$(supabase_db_service)")"
